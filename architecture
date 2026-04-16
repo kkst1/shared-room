@@ -1,0 +1,137 @@
+项目要求：现在我想要通过vibecoding实现一个项目。项目主要是实现秋招和实习时八股文的训练。具体形式是一个app或者网页，要显示八股文的题目，以及回答，包括编译和操作系统层面的解析。帮我想一个架构，具体可以参考leetcode的设计
+架构：
+前端（Web / App）使用React + Next.js（首选）或 Vue3
+模块：
+- 首页（推荐题）
+- 题库页
+- 做题页（核心）
+- 解析页
+
+后端（核心逻辑）
+Golang（强烈推荐）
+
+模块拆分：
+User Service       用户系统
+Question Service   题库服务
+Answer Service     作答记录
+Analysis Service   解析系统
+AI Service         AI评分/总结
+3️⃣ 数据库设计（重点）
+表结构（简化版）
+Question 表
+id
+title
+content
+category
+difficulty
+tags
+Answer 表（标准答案）
+question_id
+basic_answer
+deep_answer
+engineering_answer
+User Answer
+user_id
+question_id
+user_answer
+score
+feedback
+Tag 表
+id
+name
+4️⃣ AI 模块（亮点）
+你可以接入：
+ChatGPT API（评分）
+本地模型（加分项）
+
+功能：
+1. 给用户答案评分
+2. 指出缺失点
+3. 给出改进建议
+
+示例：
+
+你的回答缺少：
+- 上下文切换细节
+- 内核结构说明
+
+建议补充：
+- task_struct
+
+
+5️⃣ 推荐系统（进阶）
+
+简单版本就够：
+
+- 根据错题推荐
+- 根据标签推荐
+- 高频面试题
+三、关键模块设计（对标 LeetCode）
+做题页（核心）
+
+结构：
+
+--------------------------------
+题目
+--------------------------------
+输入框（写答案）
+--------------------------------
+提交按钮
+--------------------------------
+AI评分 + 标准答案
+--------------------------------
+深入解析（可展开）
+--------------------------------
+状态流转
+未做 -> 已提交 -> 已评分 -> 已掌握
+
+
+==============================
+基于现有需求整理的项目整体架构
+==============================
+
+一、项目定位
+- 目标：面向秋招/实习的八股文训练平台，覆盖题目练习、作答、评分、解析、复盘与推荐。
+- 形态：Web 为主（Next.js），可扩展 App。
+- 对标：交互模式参考 LeetCode（题库 -> 做题 -> 提交 -> 评分 -> 解析 -> 进阶推荐）。
+
+二、整体分层架构
+1. 表现层（Frontend）
+- 技术：React + Next.js（首选）或 Vue3。
+- 页面模块：
+  - 首页：推荐题、进度入口。
+  - 题库页：分类/标签/难度筛选与检索。
+  - 做题页（核心）：题干展示、输入作答、提交、结果回显。
+  - 解析页：标准答案、深入解析、薄弱点提示。
+
+2. 业务层（Backend / Golang）
+- User Service：用户信息、登录态、学习进度。
+- Question Service：题目管理、分类/标签/难度查询。
+- Answer Service：用户作答记录、分数、反馈、历史追踪。
+- Analysis Service：标准答案分层解析（基础/深入/工程化）。
+- AI Service：对用户答案评分、缺失点识别、改进建议生成。
+
+3. 数据层（Database）
+- Question：`id/title/content/category/difficulty/tags`
+- Answer（标准答案）：`question_id/basic_answer/deep_answer/engineering_answer`
+- User Answer（用户作答）：`user_id/question_id/user_answer/score/feedback`
+- Tag：`id/name`
+
+三、核心业务流（做题闭环）
+1. 用户从首页推荐或题库进入题目。
+2. 在做题页输入答案并提交。
+3. Answer Service 落库用户答案，触发 AI Service 评分。
+4. AI Service 返回：分数、缺失点、改进建议。
+5. Analysis Service 返回标准答案与深入解析。
+6. 页面展示“AI评分 + 标准答案 + 深入解析”。
+7. 题目状态按流程流转：`未做 -> 已提交 -> 已评分 -> 已掌握`。
+
+四、推荐系统（进阶）
+- 基础推荐策略：
+  - 按错题推荐（优先补短板）。
+  - 按标签推荐（同主题强化）。
+  - 按高频面试题推荐（贴近真实面试）。
+
+五、架构特点与演进建议
+- 当前最小可行方案：前后端分离 + Golang 模块化服务 + AI 评分能力。
+- 先实现核心闭环（题库/做题/评分/解析/状态），再迭代推荐与 App 化能力。

@@ -1,0 +1,23 @@
+# ALSA 重点 20 问（精简版）
+
+1. ALSA 的整体分层是什么？内核 ALSA Core、ASoC、`alsa-lib` 各负责什么？  
+2. 一次播放从 `snd_pcm_open` 到硬件出声的完整调用链是什么？  
+3. `hw:0,0`、`plughw`、`default` 的差异是什么？为什么排障常先用 `hw:0,0`？  
+4. `snd_card`、`snd_pcm`、`snd_pcm_substream`、`snd_pcm_runtime` 的关系是什么？  
+5. PCM 驱动的关键回调 `open/hw_params/prepare/trigger/pointer` 各做什么？  
+6. `period_size`、`buffer_size`、`hw_ptr`、`appl_ptr` 分别是什么，互相怎么影响延迟和稳定性？  
+7. 什么是 xrun（underrun/overrun）？内核通常在什么条件下报 `-EPIPE`？  
+8. 为什么 `snd_pcm_period_elapsed()` 是关键点？调用过快或过慢会有什么后果？  
+9. `mmap` 模式和 `writei/readi` 模式在性能、复杂度和风险上怎么权衡？  
+10. ASoC 为什么要拆成 CPU DAI、Codec DAI、Machine Driver 三层？  
+11. `dai_link` 的作用是什么？一次 `hw_params` 如何在 CPU/Codec 两端协商成功？  
+12. I2S 场景下 BCLK/LRCLK/MCLK 与采样率、位宽、声道数的关系怎么推导？  
+13. Device Tree 在 ASoC 中描述了哪些关键内容？`sound-dai` 绑定失败怎么排查？  
+14. DAPM 是什么？它如何通过 widget/route 实现动态电源管理与省电？  
+15. mixer/control（`snd_kcontrol`）和 PCM 数据流有什么本质区别？  
+16. 为什么 `amixer` 改了控件值有时仍然无声？你会从哪几层排查？  
+17. 44.1k 系列异常但 48k 正常时，你如何定位时钟链路问题？  
+18. 休眠唤醒后无声（suspend/resume）最常见的状态恢复遗漏有哪些？  
+19. 如何系统化定位“有节点、无报错、但无声”问题？请给出分层排障顺序。  
+20. 如果让你从零 bring-up 一块新板音频，你会按什么步骤推进并定义验收标准？
+
