@@ -1,0 +1,12 @@
+1. 构建标准统一切换为 C++17，移除 `std::span`，保证常见嵌入式交叉工具链可直接编译。
+2. 重构数据块模型，`SharedBlockView` 由裸共享内存视图改为带所有权的消息对象，修复共享内存被上游复用后 DSP/落盘线程读到脏数据的生命周期漏洞。
+3. 修复 `/dev/mem` 映射逻辑，增加页对齐处理，避免物理地址非页对齐时 `mmap` 失败。
+4. 重构 `SharedMemoryTransport` 资源管理，补齐 `initialize` 失败路径和 `stop` 路径的 fd/mmap 回收，消除资源泄漏。
+5. transport 线程改为一次 `poll` 后尽量批量 drain `rpmsg` 描述符，减少唤醒开销，提升高吞吐场景下的搬运效率。
+6. DSP 线程删除倍频程计算，仅保留单通道波形包络和 FFT 频谱输出，符合当前需求并降低计算负载。
+7. DSP 工作区改为复用型缓冲区，预构建 Hann window，减少每个 block 的动态分配和重复窗函数计算。
+8. UI 波形包络改为基于原始归一化采样构建，不再使用乘窗后的数据，显示结果更符合采集波形语义。
+9. PersistenceWorker 重构为 POSIX 批量写盘模型，支持按阈值 flush，并在停机时 drain 队列，减少尾包丢失风险。
+10. 落盘新增可选 `fdatasync` 开关，允许在吞吐优先和断电一致性之间做配置化取舍。
+11. playback bypass 增强 WAV 解析，补齐 24-bit PCM 和奇数字节 chunk padding 处理，提升对真实音频文件的兼容性。
+12. ALSA 播放恢复路径保留 `snd_pcm_recover`，并在结束时校验 drain 结果，降低 underrun 后直接失败的概率。

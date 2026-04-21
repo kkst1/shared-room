@@ -1,11 +1,19 @@
 #include "persistence_worker.hpp"
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
+#include <thread>
+
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/resource.h>
-#include <thread>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 PersistenceWorker::PersistenceWorker(const AppConfig& config,
                                      SpscRingBuffer<SharedBlockView>& persist_queue)
@@ -14,83 +22,110 @@ PersistenceWorker::PersistenceWorker(const AppConfig& config,
 PersistenceWorker::~PersistenceWorker() { stop(); }
 
 bool PersistenceWorker::start() {
-    output_.open(config_.persist_path, std::ios::binary | std::ios::trunc);
-    if (!output_.is_open()) {
+    if (running_.exchange(true, std::memory_order_acq_rel)) {
+        return true;
+    }
+
+    output_fd_ = ::open(config_.persist_path.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0644);
+    if (output_fd_ < 0) {
+        running_.store(false, std::memory_order_release);
         return false;
     }
 
     write_cache_.clear();
-    write_cache_.reserve(config_.persist_flush_bytes / sizeof(int32_t) + config_.samples_per_block);
-
-    if (running_.exchange(true)) {
-        return true;
-    }
+    const size_t reserve_samples =
+        (std::max<size_t>(config_.persist_flush_bytes, sizeof(int32_t)) / sizeof(int32_t)) +
+        std::max<size_t>(config_.samples_per_block, 1);
+    write_cache_.reserve(reserve_samples);
 
     persist_thread_ = std::thread(&PersistenceWorker::persist_loop, this);
     return true;
 }
 
 void PersistenceWorker::stop() {
-    if (!running_.exchange(false)) {
-        if (output_.is_open()) {
-            output_.close();
-        }
-        return;
-    }
+    running_.store(false, std::memory_order_release);
 
     if (persist_thread_.joinable()) {
         persist_thread_.join();
     }
 
-    // 停止前强制刷盘，避免尾部数据丢失。
+    drain_pending_blocks();
     flush_cache();
-    if (output_.is_open()) {
-        output_.close();
+
+    if (output_fd_ >= 0) {
+        ::close(output_fd_);
+        output_fd_ = -1;
     }
 }
 
 void PersistenceWorker::persist_loop() {
-    // 线程4明确设为低优先级，不参与实时路径抢占。
     set_low_priority();
 
-    while (running_.load(std::memory_order_relaxed)) {
+    while (running_.load(std::memory_order_acquire) || persist_queue_.approx_size() > 0) {
         auto item = persist_queue_.pop();
         if (!item.has_value()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
 
         append_block(item.value());
-        const size_t cached_bytes = write_cache_.size() * sizeof(int32_t);
-        if (cached_bytes >= config_.persist_flush_bytes) {
-            flush_cache();
+        if (write_cache_.size() * sizeof(int32_t) >= config_.persist_flush_bytes) {
+            if (!flush_cache()) {
+                running_.store(false, std::memory_order_release);
+                break;
+            }
         }
     }
 }
 
 void PersistenceWorker::append_block(const SharedBlockView& block) {
-    // 在低优先级线程内把共享视图拷贝到持久化缓存，避免线程1做重活。
     write_cache_.insert(write_cache_.end(), block.samples.begin(), block.samples.end());
 }
 
-void PersistenceWorker::flush_cache() {
-    if (!output_.is_open() || write_cache_.empty()) {
-        return;
+bool PersistenceWorker::flush_cache() {
+    if (output_fd_ < 0 || write_cache_.empty()) {
+        return true;
     }
 
-    const auto* bytes = reinterpret_cast<const char*>(write_cache_.data());
-    const std::streamsize count = static_cast<std::streamsize>(write_cache_.size() * sizeof(int32_t));
-    output_.write(bytes, count);
-    output_.flush();
+    const auto* bytes = reinterpret_cast<const std::byte*>(write_cache_.data());
+    size_t remaining = write_cache_.size() * sizeof(int32_t);
+    while (remaining > 0) {
+        const ssize_t written = ::write(output_fd_, bytes + (write_cache_.size() * sizeof(int32_t) - remaining), remaining);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        remaining -= static_cast<size_t>(written);
+    }
+
+    if (config_.persist_fsync_on_flush && ::fdatasync(output_fd_) != 0) {
+        return false;
+    }
+
     write_cache_.clear();
+    return true;
 }
 
 void PersistenceWorker::set_low_priority() const {
-    // 优先尝试 Linux 的 SCHED_IDLE，确保“能写就写、不能写不影响主链路”。
     sched_param param {};
     param.sched_priority = 0;
     ::pthread_setschedparam(::pthread_self(), SCHED_IDLE, &param);
-
-    // 进一步调低 nice 值，减少对 CPU 的竞争。
     ::setpriority(PRIO_PROCESS, 0, 19);
+}
+
+bool PersistenceWorker::drain_pending_blocks() {
+    bool ok = true;
+    while (true) {
+        auto item = persist_queue_.pop();
+        if (!item.has_value()) {
+            break;
+        }
+        append_block(item.value());
+        if (write_cache_.size() * sizeof(int32_t) >= config_.persist_flush_bytes) {
+            ok = flush_cache() && ok;
+        }
+    }
+    return ok;
 }

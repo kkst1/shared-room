@@ -16,10 +16,8 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     qRegisterMetaType<DspUiFrame>("DspUiFrame");
 
-    // 示例配置：实际部署时建议改为读取 yaml/json/命令行参数。
     AppConfig config {};
 
-    // 线程1->线程2，线程1->线程4 的两条无锁队列。
     SpscRingBuffer<SharedBlockView> dsp_queue(config.ring_capacity);
     SpscRingBuffer<SharedBlockView> persist_queue(config.ring_capacity);
 
@@ -33,18 +31,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    DspEngineWorker dsp_worker(config, dsp_queue, &ui);
     PersistenceWorker persist_worker(config, persist_queue);
     if (!persist_worker.start()) {
         std::cerr << "failed to open persistence file: " << config.persist_path << std::endl;
         return 1;
     }
 
+    DspEngineWorker dsp_worker(config, dsp_queue, &ui);
     transport.start();
     dsp_worker.start();
 
-    // 可选：旁路回放模式。
-    // 运行示例：./k3_app /run/media/mmcblk0p1/demo.wav
     if (argc > 1) {
         OfflineBypassPlayer player(config);
         const std::string wav = argv[1];
@@ -54,11 +50,10 @@ int main(int argc, char* argv[]) {
     }
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [&]() {
-        dsp_worker.stop();
         transport.stop();
+        dsp_worker.stop();
         persist_worker.stop();
     });
 
     return app.exec();
 }
-
