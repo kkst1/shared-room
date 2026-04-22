@@ -10,9 +10,7 @@
 
 class SharedMemoryTransport {
 public:
-    SharedMemoryTransport(const AppConfig& config,
-                          SpscRingBuffer<SharedBlockView>& dsp_queue,
-                          SpscRingBuffer<SharedBlockView>& persist_queue);
+    SharedMemoryTransport(const AppConfig& config, SpscRingBuffer<AudioFramePtr>& ingress_queue);
     ~SharedMemoryTransport();
 
     bool initialize();
@@ -21,8 +19,7 @@ public:
 
     struct Stats {
         uint64_t received_descriptors = 0;
-        uint64_t dropped_for_dsp_queue_full = 0;
-        uint64_t dropped_for_persist_queue_full = 0;
+        uint64_t dropped_for_ingress_queue_full = 0;
         uint64_t malformed_descriptor = 0;
     };
 
@@ -31,14 +28,13 @@ public:
 private:
     void ingest_loop();
     bool read_descriptor(RpmsgDataDescriptor& desc);
-    bool build_block(const RpmsgDataDescriptor& desc, SharedBlockView& out_block) const;
+    bool build_frame(const RpmsgDataDescriptor& desc, AudioFramePtr& out_frame) const;
     void set_realtime_priority() const;
     void close_resources();
 
 private:
     AppConfig config_;
-    SpscRingBuffer<SharedBlockView>& dsp_queue_;
-    SpscRingBuffer<SharedBlockView>& persist_queue_;
+    SpscRingBuffer<AudioFramePtr>& ingress_queue_;
 
     int rpmsg_fd_ = -1;
     int shm_fd_ = -1;
@@ -50,7 +46,6 @@ private:
     std::thread ingest_thread_;
 
     mutable std::atomic<uint64_t> received_descriptors_ {0};
-    mutable std::atomic<uint64_t> dropped_for_dsp_queue_full_ {0};
-    mutable std::atomic<uint64_t> dropped_for_persist_queue_full_ {0};
+    mutable std::atomic<uint64_t> dropped_for_ingress_queue_full_ {0};
     mutable std::atomic<uint64_t> malformed_descriptor_ {0};
 };

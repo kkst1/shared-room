@@ -14,6 +14,7 @@ pkg_check_modules(SAMPLERATE REQUIRED samplerate)
 
 add_executable(k3_app
     src/main.cpp
+    src/frame_dispatcher.cpp
     src/shm_transport.cpp
     src/dsp_engine.cpp
     src/ui_bridge.cpp

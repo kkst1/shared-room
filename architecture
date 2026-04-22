@@ -1,137 +1,674 @@
-项目要求：现在我想要通过vibecoding实现一个项目。项目主要是实现秋招和实习时八股文的训练。具体形式是一个app或者网页，要显示八股文的题目，以及回答，包括编译和操作系统层面的解析。帮我想一个架构，具体可以参考leetcode的设计
-架构：
-前端（Web / App）使用React + Next.js（首选）或 Vue3
-模块：
-- 首页（推荐题）
-- 题库页
-- 做题页（核心）
-- 解析页
+项目名称：基于 TI K3 异构 SoC 的低延迟音频采集、分析、存储与播放系统
 
-后端（核心逻辑）
-Golang（强烈推荐）
+一、项目重新定位
 
-模块拆分：
-User Service       用户系统
-Question Service   题库服务
-Answer Service     作答记录
-Analysis Service   解析系统
-AI Service         AI评分/总结
-3️⃣ 数据库设计（重点）
-表结构（简化版）
-Question 表
-id
-title
-content
-category
-difficulty
-tags
-Answer 表（标准答案）
-question_id
-basic_answer
-deep_answer
-engineering_answer
-User Answer
-user_id
-question_id
-user_answer
-score
-feedback
-Tag 表
-id
-name
-4️⃣ AI 模块（亮点）
-你可以接入：
-ChatGPT API（评分）
-本地模型（加分项）
+这个项目不要再表述成“R5 采集，A 核收数据，再 FFT 和落盘”的功能堆叠，而要升级成一个更现代、可扩展、可量化优化的数据系统：
 
-功能：
-1. 给用户答案评分
-2. 指出缺失点
-3. 给出改进建议
+- 底层能力：基于 TI K3 异构 SoC 的板级 Bring-up、U-Boot / Linux Kernel 移植裁剪、Buildroot RootFS 定制
+- 实时采集能力：R5F 负责高实时音频采样与批量搬运
+- 高吞吐传输能力：基于共享内存 + 事件通知的低拷贝数据通道
+- 在线处理能力：A 核 Linux 侧完成 FFT / 频谱分析 / UI 展示 / 持久化
+- 离线回放能力：基于 ALSA-lib 的 WAV 播放链路
+- 工程化能力：可观测、可压测、可扩展、可版本化部署
 
-示例：
+站在现代大厂开发视角，这个项目应该被定义为：
 
-你的回答缺少：
-- 上下文切换细节
-- 内核结构说明
-
-建议补充：
-- task_struct
+“一个运行在 TI K3 异构平台上的边缘实时音频数据管线系统，包含板级软件平台、跨核低延迟数据通道、流式处理 Pipeline、存储与回放子系统。”
 
 
-5️⃣ 推荐系统（进阶）
+二、现有方案的问题
 
-简单版本就够：
+你现在的方案能工作，但从架构表达和工程设计上存在几个明显短板：
 
-- 根据错题推荐
-- 根据标签推荐
-- 高频面试题
-三、关键模块设计（对标 LeetCode）
-做题页（核心）
+1. 控制面和数据面虽然已经部分拆开，但协议边界不清晰
+- 现在的描述是“采满 ping 区后通过 rpmsg 告诉 A 核”
+- 但没有把 rpmsg 明确为事件通知面，也没有把共享内存明确为数据面
 
-结构：
+2. A 核线程模型还是“功能线程堆叠”，不是“有背压的流式管线”
+- 传输线程、DSP 线程、持久化线程、UI 线程都存在
+- 但没有定义数据所有权、生命周期、引用关系、丢帧策略、慢消费者策略
 
---------------------------------
-题目
---------------------------------
-输入框（写答案）
---------------------------------
-提交按钮
---------------------------------
-AI评分 + 标准答案
---------------------------------
-深入解析（可展开）
---------------------------------
-状态流转
-未做 -> 已提交 -> 已评分 -> 已掌握
+3. 数据链路还不够现代
+- `/dev/mem` 直接映射共享内存是可行的 bring-up 方案，但长期看比较原始
+- 没有把“零拷贝、单生产者多消费者、描述符传递、缓存一致性、内存池复用”这些现代设计讲清楚
+
+4. 可观测性不足
+- 没有明确每一级的 seq、timestamp、drop counter、latency histogram
+- 面试里会显得像“功能做通了，但没有工程化闭环”
+
+5. 架构扩展性不够
+- 目前更像单路采集 demo
+- 没有自然扩展到多通道、多算法、多消费者、多优先级任务
 
 
-==============================
-基于现有需求整理的项目整体架构
-==============================
+三、优化后的总体架构
 
-一、项目定位
-- 目标：面向秋招/实习的八股文训练平台，覆盖题目练习、作答、评分、解析、复盘与推荐。
-- 形态：Web 为主（Next.js），可扩展 App。
-- 对标：交互模式参考 LeetCode（题库 -> 做题 -> 提交 -> 评分 -> 解析 -> 进阶推荐）。
+采用“四层两面一中枢”的表达方式。
 
-二、整体分层架构
-1. 表现层（Frontend）
-- 技术：React + Next.js（首选）或 Vue3。
-- 页面模块：
-  - 首页：推荐题、进度入口。
-  - 题库页：分类/标签/难度筛选与检索。
-  - 做题页（核心）：题干展示、输入作答、提交、结果回显。
-  - 解析页：标准答案、深入解析、薄弱点提示。
+1. 四层
+- Platform Layer：板级软件平台层
+- Realtime Capture Layer：R5F 实时采集层
+- Data Transport & Processing Layer：跨核传输与处理层
+- Application Layer：存储、可视化、播放与运维层
 
-2. 业务层（Backend / Golang）
-- User Service：用户信息、登录态、学习进度。
-- Question Service：题目管理、分类/标签/难度查询。
-- Answer Service：用户作答记录、分数、反馈、历史追踪。
-- Analysis Service：标准答案分层解析（基础/深入/工程化）。
-- AI Service：对用户答案评分、缺失点识别、改进建议生成。
+2. 两面
+- Control Plane：remoteproc/rpmsg，负责控制、状态、事件通知
+- Data Plane：共享内存环形数据区，负责大块音频数据搬运
 
-3. 数据层（Database）
-- Question：`id/title/content/category/difficulty/tags`
-- Answer（标准答案）：`question_id/basic_answer/deep_answer/engineering_answer`
-- User Answer（用户作答）：`user_id/question_id/user_answer/score/feedback`
-- Tag：`id/name`
+3. 一中枢
+- A 核用户态 Runtime：统一负责队列分发、生命周期管理、处理调度、指标采集和异常恢复
 
-三、核心业务流（做题闭环）
-1. 用户从首页推荐或题库进入题目。
-2. 在做题页输入答案并提交。
-3. Answer Service 落库用户答案，触发 AI Service 评分。
-4. AI Service 返回：分数、缺失点、改进建议。
-5. Analysis Service 返回标准答案与深入解析。
-6. 页面展示“AI评分 + 标准答案 + 深入解析”。
-7. 题目状态按流程流转：`未做 -> 已提交 -> 已评分 -> 已掌握`。
 
-四、推荐系统（进阶）
-- 基础推荐策略：
-  - 按错题推荐（优先补短板）。
-  - 按标签推荐（同主题强化）。
-  - 按高频面试题推荐（贴近真实面试）。
+四、优化后的分层设计
 
-五、架构特点与演进建议
-- 当前最小可行方案：前后端分离 + Golang 模块化服务 + AI 评分能力。
-- 先实现核心闭环（题库/做题/评分/解析/状态），再迭代推荐与 App 化能力。
+1. Platform Layer
+
+职责：
+- 基于修改版 BeagleY-AI 的硬件 Bring-up
+- U-Boot 移植、SPL 和 U-Boot proper 调整
+- Linux Kernel 设备树、驱动与配置裁剪
+- Buildroot 根文件系统制作
+- remoteproc/rpmsg/openamp 运行环境建立
+
+建议现代化表达：
+- 维护统一 BSP 版本矩阵：`board-rev / u-boot commit / kernel commit / rootfs version / r5 firmware version`
+- 固件与用户态程序纳入统一构建产物
+- 启动链路具备版本戳、构建时间和 git hash 追踪能力
+
+建议新增能力：
+- reserved-memory 正式描述共享内存区域，不再仅仅依赖裸 `/dev/mem` 约定
+- 将 R5F 固件、A 核 app、配置文件一并打入 Buildroot 镜像
+- 在启动阶段输出平台能力摘要：
+  - SoC revision
+  - DDR size
+  - reserved-memory map
+  - remoteproc firmware version
+
+
+2. Realtime Capture Layer
+
+运行位置：R5F
+
+职责：
+- 驱动 ADS8688 完成高实时采样
+- 按固定 chunk 大小将采样结果写入共享内存
+- 在 chunk 就绪后，通过 rpmsg 向 A 核发送“数据可消费”通知
+- 在必要时进行简单预处理：
+  - 通道重排
+  - 定点转定长 packed 格式
+  - 基础去抖/窗口前处理
+
+优化方向：
+
+2.1 采集缓冲模型从 Ping-Pong 升级为 Descriptor Ring + Buffer Pool
+
+现有方案：
+- 只有 Ping/Pong 两块
+- A 核一旦处理稍慢，就容易顶到生产者
+
+优化方案：
+- R5F 维护一个固定大小的 buffer pool，例如 8 到 32 个 chunk
+- 每个 chunk 对应一个 descriptor
+- descriptor 包含：
+  - seq
+  - buffer_id
+  - payload_offset
+  - payload_size
+  - channel_count
+  - sample_rate
+  - sample_format
+  - capture_timestamp
+  - flags
+
+优点：
+- 从双缓冲升级为可伸缩的分段环
+- 降低 A 核短时抖动导致的数据覆盖风险
+- 更容易做丢包统计、重放、延迟分析
+
+2.2 rpmsg 不再承载数据，只承载事件通知
+
+消息体最小化：
+- seq
+- buffer_id
+- size
+- timestamp
+- flags
+
+这样做的价值：
+- 避免大块音频挤占 rpmsg buffer
+- 避免高频小包导致大量中断和拷贝
+- 让 rpmsg 回归“控制通知通道”的本职
+
+2.3 R5F 侧状态机
+
+每个 chunk 的状态：
+- FREE
+- FILLING
+- READY
+- IN_USE_BY_A
+- RECYCLE
+
+R5F 只允许：
+- 从 FREE -> FILLING -> READY
+- 收到 recycle/credit 后从 READY 或 RECYCLE 回到 FREE
+
+这比单纯 Ping/Pong 标志位更稳健。
+
+
+3. Data Transport & Processing Layer
+
+运行位置：A 核 Linux 用户态 Runtime
+
+这是整个系统的核心。
+
+职责：
+- 接收 rpmsg 事件
+- 将共享内存里的 chunk 映射为只读数据视图
+- 将“描述符视图”分发给后续消费者
+- 管理生命周期、引用计数、背压和丢帧策略
+- 对外暴露统一的观测指标
+
+优化后的线程模型不建议再简单表述为“4 个线程”，而应当表述为：
+
+3.1 IO Runtime Thread
+- 阻塞监听 rpmsg endpoint
+- 收到消息后解析 descriptor
+- 做最轻量校验：
+  - seq 是否连续
+  - size 是否越界
+  - timestamp 是否回退
+  - buffer_id 是否合法
+- 将 descriptor 封装为 `AudioFrameView`
+- 投递到后续分发器
+
+3.2 Frame Dispatcher
+- 不拷贝 payload
+- 只分发 frame metadata + memory view
+- 为多个消费者建立独立的消费游标
+- 使用引用计数或 ack bitmap 管理回收
+
+建议不要再说“把共享内存视图发给两个无锁队列”
+更现代的表达是：
+
+“A 核侧基于单生产者、多消费者的描述符分发器，将共享内存中的音频 chunk 以零拷贝视图形式广播给 DSP 与持久化子系统；实际 payload 不复制，仅传播 frame descriptor 和只读 span。”
+
+3.3 DSP Worker Pool
+- 不是单线程 FFT，而是可扩展 DSP 子系统
+- 基础版本可保留 1 个 DSP 线程
+- 升级版可变成固定线程池：
+  - FFT
+  - feature extraction
+  - anomaly detection
+
+建议增加：
+- 窗函数处理
+- FFT plan 复用
+- 批处理模式
+- SIMD/NEON 优化接口预留
+
+3.4 Persistence Worker
+- 只负责顺序落盘
+- 不参与 UI 或算法逻辑
+- 将 frame 组织为 WAV 流或原始 PCM + header finalize
+
+建议优化：
+- 使用预分配写缓冲区
+- 顺序写 + batch flush
+- 后台独立 fsync 策略
+- 将落盘路径从“每帧写文件”优化为“流式文件写入”
+
+3.5 UI / Visualization Thread
+- 不直接消费原始高频数据
+- 消费 DSP 输出的降采样频谱结果或摘要结果
+- 与原始采集通道解耦
+
+这样能避免 UI 成为高吞吐链路中的慢消费者。
+
+
+五、现代化的数据传输链路设计
+
+这是最关键的部分。
+
+目标：
+- 低拷贝
+- 可背压
+- 可观测
+- 可扩展
+- 慢消费者不拖死快路径
+
+1. 数据面
+
+共享内存布局建议：
+
+- SharedMemoryHeader
+  - magic
+  - version
+  - region_size
+  - descriptor_ring_offset
+  - descriptor_count
+  - audio_buffer_pool_offset
+  - chunk_size
+  - chunk_count
+
+- DescriptorRing
+  - descriptors[N]
+
+- AudioBufferPool
+  - chunk0
+  - chunk1
+  - chunk2
+  - ...
+
+descriptor 建议字段：
+- seq
+- chunk_id
+- offset
+- size
+- sample_rate
+- channels
+- sample_bits
+- capture_ts_hw
+- capture_ts_mono
+- crc_or_checksum
+- flags
+- state
+
+2. 控制面
+
+rpmsg 消息只做三类：
+- DATA_READY
+- CREDIT_RETURN
+- CONTROL_CMD / CONTROL_ACK
+
+其中：
+- DATA_READY：R5F -> A 核，表示某个 chunk 可读
+- CREDIT_RETURN：A 核 -> R5F，表示某个 chunk 可复用
+- CONTROL_CMD：启动、停止、参数切换、采样率切换、通道配置等
+
+3. 生命周期管理
+
+现代化设计必须解决“一个 chunk 同时被多个消费者引用”这个问题。
+
+建议方案：
+
+方案 A：引用计数
+- Dispatcher 生成 frame view 后，初始化 refcnt = 消费者数量
+- DSP 消费完 refcnt--
+- Persistence 消费完 refcnt--
+- refcnt 归零时发送 CREDIT_RETURN 给 R5F
+
+方案 B：消费者位图
+- ack_mask = DSP_BIT | PERSIST_BIT
+- 每个消费者处理完清自己的 bit
+- 清零后回收
+
+对于你这个项目，位图更简单，工程上也足够。
+
+4. 背压与丢帧策略
+
+必须明确，不然面试里会显得没有系统设计能力。
+
+建议分层策略：
+
+- 采集主链路优先级最高
+- 持久化高于 UI
+- UI 永远允许降频/丢帧
+- DSP 可根据模式决定是否允许抽帧
+
+具体策略：
+
+- DSP 队列满：
+  - 配置为“抽样处理模式”
+  - 仅保留最新或按固定 stride 保留
+
+- UI 队列满：
+  - 直接丢弃旧频谱结果
+
+- Persistence 队列满：
+  - 视产品目标决定
+  - 如果强调数据完整性：阻断新的采集 credit，触发系统告警
+  - 如果强调实时连续性：允许统计性丢帧，但必须计数
+
+现代表述建议：
+
+“系统采用分级背压策略：采集与持久化为强一致链路，DSP 与 UI 为弹性链路。UI 允许丢结果，DSP 允许降采样处理，持久化路径默认优先保证完整性。”
+
+
+六、共享内存访问方式优化
+
+你现在用 `/dev/mem` 映射共享内存，这在 bring-up 阶段合理，但对外表达时建议升级说法。
+
+阶段化演进路线：
+
+第一阶段：可用性优先
+- A 核通过 `/dev/mem` + `mmap` 映射 reserved-memory
+- 快速打通端到端功能
+
+第二阶段：工程化
+- 增加内核态 shm bridge driver
+- 由驱动导出字符设备或 dma-buf 风格接口
+- 在驱动中统一管理：
+  - 映射权限
+  - cache attribute
+  - buffer recycle
+  - stats
+
+第三阶段：平台化
+- 抽象出通用跨核流式通道组件
+- 对上提供统一 API：
+  - subscribe_frame()
+  - ack_frame()
+  - get_metrics()
+
+如果你面试里还停留在 `/dev/mem`，会显得偏原型系统。
+但如果你能说出这是“第一阶段快速实现”，下一阶段会收敛成“reserved-memory + 轻量驱动 + 用户态 runtime”的模式，就会成熟很多。
+
+
+七、线程与队列模型优化
+
+当前描述：
+- 共享内存传输线程
+- DSP 线程
+- 持久化线程
+- UI 线程
+
+优化后建议写成：
+
+1. Ingress Thread
+- 收 rpmsg
+- 校验 frame descriptor
+- 推送到 dispatcher
+
+2. Dispatcher
+- 单生产者
+- 对多个消费者分发 descriptor
+- 管理回收条件
+
+3. DSP Consumer
+- 消费 frame view
+- 进行 FFT 与频谱计算
+- 输出 SpectrumFrame 给 UI
+
+4. Persistence Consumer
+- 消费 frame view
+- 进行顺序写盘
+
+5. UI Consumer
+- 消费 DSP 结果，而不是原始采样
+
+队列建议：
+
+- Ingress -> Dispatcher：SPSC
+- Dispatcher -> DSP：SPSC
+- Dispatcher -> Persistence：SPSC
+- DSP -> UI：SPSC
+
+理由：
+- 每条链路单生产者单消费者
+- 实现最简单、cache 友好、最适合 lock-free ring
+
+如果以后要支持多个 DSP worker，再把 DSP 子系统改成 MPSC / work-stealing pool。
+
+
+八、算法处理层优化
+
+当前只有 FFT，显得偏基础。
+
+建议把 DSP 子系统升级为“多级处理管线”：
+
+1. Preprocess Stage
+- DC offset removal
+- 窗函数
+- 归一化
+
+2. FFT Stage
+- FFT plan 预计算
+- 块处理
+
+3. Feature Extraction Stage
+- 峰值频点
+- 主频
+- 带宽能量
+- SNR / noise floor
+
+4. Visualization Output Stage
+- 只输出 UI 需要的数据摘要
+
+这样项目就不只是“会做 FFT”，而是“建立了流式频域分析链路”。
+
+
+九、持久化链路优化
+
+现有描述是“接收队列后一直传输到磁盘中”。
+这个表达太粗。
+
+现代化设计建议：
+
+1. Writer 以 session 为单位管理文件
+- start session
+- append pcm frames
+- finalize wav header
+
+2. 引入写入缓冲策略
+- 多个 frame 合并写
+- 减少系统调用次数
+
+3. 引入磁盘健康监控
+- write latency
+- flush latency
+- backlog size
+
+4. 文件格式策略
+- 在线阶段：原始 PCM 流 + metadata journal
+- 结束时：回填 WAV header
+
+如果要更工程化：
+- 支持 chunk index 文件
+- 支持异常断电恢复部分会话
+
+
+十、播放链路优化
+
+现在的播放器只是“读 WAV，用 ALSA-lib 播放”。
+
+建议升级为独立 Playback Subsystem：
+
+1. File Reader
+- 解析 WAV header
+- 校验格式
+
+2. PCM Scheduler
+- 按 ALSA period 推送 PCM
+- 管理应用层播放缓冲
+
+3. Device Adapter
+- 封装 ALSA hw params
+- 管理 underrun recovery
+
+4. Metrics
+- playback latency
+- underrun count
+- writei blocking time
+
+现代化表达：
+
+“播放侧采用文件解复用、PCM 调度和 ALSA 设备适配三层结构，支持对 period、buffer size、underrun 行为进行独立调优。”
+
+
+十一、可观测性体系
+
+大厂视角下，一个数据系统如果没有指标，只能算 demo。
+
+必须加的指标：
+
+1. 端到端序号
+- 每个 frame 从 R5F 开始分配全局 seq
+- A 核各阶段都保留 seq
+- WAV 落盘时也写入旁路 index 或 debug log
+
+2. 时间戳
+- capture_ts_hw
+- capture_ts_r5_send
+- a_rx_ts
+- dsp_done_ts
+- persist_done_ts
+- ui_render_ts
+
+3. 关键计数器
+- rpmsg notify count
+- frame recv count
+- seq gap count
+- buffer recycle latency
+- dsp drop count
+- ui drop count
+- persist backlog high watermark
+- alsa underrun count
+
+4. 延迟分布
+- R5F capture -> A 核 recv
+- A 核 recv -> DSP done
+- A 核 recv -> disk write done
+- WAV read -> ALSA submit
+
+这些指标会让你的项目从“功能型项目”变成“性能可解释的系统项目”。
+
+
+十二、可靠性与异常恢复
+
+建议补齐以下机制：
+
+1. R5F 心跳
+- 周期性 heartbeat
+- A 核超时检测
+
+2. 通道重建
+- rpmsg endpoint 断开后自动重连
+- remoteproc 异常时支持重新拉起 R5F
+
+3. 数据一致性保护
+- seq gap 检测
+- descriptor checksum
+- chunk 状态非法转换报警
+
+4. 运行模式切换
+- low-latency mode
+- full-persist mode
+- analysis-priority mode
+
+
+十三、现代化的模块划分
+
+建议最终整理为以下模块：
+
+1. BSP / Platform
+- U-Boot
+- Linux Kernel
+- DTS
+- Buildroot
+- remoteproc / rpmsg / reserved-memory
+
+2. R5 Firmware
+- ads8688 driver
+- capture scheduler
+- shared memory writer
+- rpmsg notifier
+- buffer state machine
+
+3. A-Core Runtime
+- rpmsg client
+- frame ingress
+- dispatcher
+- buffer lifecycle manager
+- metrics exporter
+
+4. DSP Service
+- preprocess
+- fft
+- feature extraction
+- result serializer
+
+5. Persistence Service
+- session manager
+- wav writer
+- disk buffer manager
+
+6. UI Service
+- spectrum renderer
+- status dashboard
+
+7. Playback Service
+- wav parser
+- pcm scheduler
+- alsa adapter
+
+
+十四、优化后的核心数据链路
+
+推荐你在文档和面试里统一用这条链路描述：
+
+1. R5F 通过 ADS8688 以固定 chunk 粒度采样，将采样结果写入 reserved-memory 中的 chunk buffer
+2. 每个 chunk 填满后，R5F 更新 descriptor ring，将 chunk 状态置为 READY
+3. R5F 通过 rpmsg 向 A 核发送一个轻量 DATA_READY 消息，仅包含 seq、chunk_id、size、timestamp 等元信息
+4. A 核 Ingress Thread 收到通知后，不复制 payload，只创建一个 `AudioFrameView`
+5. Dispatcher 将该 frame view 广播给 DSP Consumer 与 Persistence Consumer
+6. DSP Consumer 完成 FFT 和特征提取后，仅向 UI 发送降采样后的分析结果
+7. Persistence Consumer 负责顺序写盘，完成后更新消费者 ack
+8. 当所有强依赖消费者完成后，A 核向 R5F 发送 CREDIT_RETURN，允许该 chunk 被重新写入
+
+这个描述的核心优点：
+- 数据面零拷贝或近零拷贝
+- 控制面与数据面清晰分离
+- 多消费者共享同一份 payload
+- 回收路径清晰
+- 具备背压和可观测性
+
+
+十五、项目亮点升级后的表达
+
+你在简历和面试里，不要再说：
+- “我做了 rpmsg、共享内存、FFT、ALSA”
+
+建议升级成：
+
+1. 平台侧
+- 完成基于 TI K3 异构 SoC 的板级 Bring-up、U-Boot / Linux Kernel 移植与裁剪，基于 Buildroot 构建最小化 RootFS，并打通 remoteproc/rpmsg 异构通信环境
+
+2. 实时采集侧
+- 在 R5F 上实现 ADS8688 高实时采样链路，构建 chunk 化共享内存缓冲池，并通过 rpmsg 实现轻量事件通知
+
+3. A 核 Runtime
+- 设计控制面与数据面分离的跨核音频传输架构，采用共享内存承载音频 payload、rpmsg 承载 descriptor 通知，避免大块数据进入 vring，降低拷贝与中断开销
+
+4. 流式处理侧
+- 在 A 核构建基于 lock-free queue 的多阶段音频处理 Pipeline，实现零拷贝 frame view 分发、FFT 分析、频谱可视化和 WAV 持久化
+
+5. 工程化优化
+- 为整条链路设计 frame seq、timestamp、drop counter、backlog 和 latency 指标，实现对丢帧、慢消费者和 cache coherency 问题的可观测与定位
+
+
+十六、如果继续演进，下一阶段可以做什么
+
+1. 用轻量内核驱动替代 `/dev/mem`
+- 把 reserved-memory 管理、cache policy、buffer recycle 收敛到驱动
+
+2. 引入 dma-buf 或统一共享内存抽象
+- 为后续多消费者和更复杂图形链路做准备
+
+3. 支持多路输入
+- 多通道 ADS / 多路传感器统一 descriptor 协议
+
+4. DSP 子系统插件化
+- FFT 之外支持滤波、检测、分类
+
+5. 指标和调试平台化
+- 导出 Prometheus 风格指标或本地调试 dashboard
+
+6. 回放与采集统一调度
+- 形成完整的 capture / process / persist / playback 闭环系统
+
+
+十七、最终一句话架构总结
+
+这个项目优化后的核心，不是“R5 把数据发给 A 核”，而是：
+
+“基于 TI K3 异构 SoC 构建了一套控制面与数据面分离的低延迟音频数据管线：R5F 负责高实时采样与 chunk 化写入，共享内存承载音频 payload，rpmsg 负责轻量事件通知，A 核 Runtime 通过零拷贝 frame view、无锁队列和分级背压机制，将数据稳定分发到 DSP、持久化和 UI 子系统，并通过统一指标体系实现链路可观测和性能优化。”

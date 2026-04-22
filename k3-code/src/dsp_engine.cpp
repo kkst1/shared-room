@@ -25,7 +25,7 @@ size_t floor_pow2(size_t n) {
 } // namespace
 
 DspEngineWorker::DspEngineWorker(const AppConfig& config,
-                                 SpscRingBuffer<SharedBlockView>& dsp_queue,
+                                 SpscRingBuffer<AudioFramePtr>& dsp_queue,
                                  UiBridge* ui_bridge)
     : config_(config), dsp_queue_(dsp_queue), ui_bridge_(ui_bridge) {}
 
@@ -56,7 +56,12 @@ void DspEngineWorker::dsp_loop() {
             continue;
         }
 
-        DspUiFrame frame = process_block(item.value());
+        const AudioFramePtr& block = item.value();
+        if (!block) {
+            continue;
+        }
+
+        DspUiFrame frame = process_block(*block);
         if (ui_bridge_ == nullptr) {
             continue;
         }
@@ -69,7 +74,7 @@ void DspEngineWorker::dsp_loop() {
     }
 }
 
-DspUiFrame DspEngineWorker::process_block(const SharedBlockView& block) {
+DspUiFrame DspEngineWorker::process_block(const AudioFrame& block) {
     DspUiFrame frame {};
     frame.sequence = block.desc.sequence;
     frame.timestamp_ns = block.desc.timestamp_ns;

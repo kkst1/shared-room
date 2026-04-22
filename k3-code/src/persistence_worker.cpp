@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 PersistenceWorker::PersistenceWorker(const AppConfig& config,
-                                     SpscRingBuffer<SharedBlockView>& persist_queue)
+                                     SpscRingBuffer<AudioFramePtr>& persist_queue)
     : config_(config), persist_queue_(persist_queue) {}
 
 PersistenceWorker::~PersistenceWorker() { stop(); }
@@ -68,7 +68,12 @@ void PersistenceWorker::persist_loop() {
             continue;
         }
 
-        append_block(item.value());
+        const AudioFramePtr& frame = item.value();
+        if (!frame) {
+            continue;
+        }
+
+        append_block(*frame);
         if (write_cache_.size() * sizeof(int32_t) >= config_.persist_flush_bytes) {
             if (!flush_cache()) {
                 running_.store(false, std::memory_order_release);
@@ -78,7 +83,7 @@ void PersistenceWorker::persist_loop() {
     }
 }
 
-void PersistenceWorker::append_block(const SharedBlockView& block) {
+void PersistenceWorker::append_block(const AudioFrame& block) {
     write_cache_.insert(write_cache_.end(), block.samples.begin(), block.samples.end());
 }
 
@@ -122,7 +127,11 @@ bool PersistenceWorker::drain_pending_blocks() {
         if (!item.has_value()) {
             break;
         }
-        append_block(item.value());
+        const AudioFramePtr& frame = item.value();
+        if (!frame) {
+            continue;
+        }
+        append_block(*frame);
         if (write_cache_.size() * sizeof(int32_t) >= config_.persist_flush_bytes) {
             ok = flush_cache() && ok;
         }

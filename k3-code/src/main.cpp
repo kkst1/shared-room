@@ -5,6 +5,7 @@
 #include <string>
 
 #include "dsp_engine.hpp"
+#include "frame_dispatcher.hpp"
 #include "lockfree_ring_buffer.hpp"
 #include "persistence_worker.hpp"
 #include "playback_bypass.hpp"
@@ -18,18 +19,21 @@ int main(int argc, char* argv[]) {
 
     AppConfig config {};
 
-    SpscRingBuffer<SharedBlockView> dsp_queue(config.ring_capacity);
-    SpscRingBuffer<SharedBlockView> persist_queue(config.ring_capacity);
+    SpscRingBuffer<AudioFramePtr> ingress_queue(config.ingress_capacity);
+    SpscRingBuffer<AudioFramePtr> dsp_queue(config.ring_capacity);
+    SpscRingBuffer<AudioFramePtr> persist_queue(config.ring_capacity);
 
     UiBridge ui;
     ui.setup();
     ui.show();
 
-    SharedMemoryTransport transport(config, dsp_queue, persist_queue);
+    SharedMemoryTransport transport(config, ingress_queue);
     if (!transport.initialize()) {
         std::cerr << "failed to initialize transport. check rpmsg/shm config." << std::endl;
         return 1;
     }
+
+    FrameDispatcher dispatcher(ingress_queue, dsp_queue, persist_queue);
 
     PersistenceWorker persist_worker(config, persist_queue);
     if (!persist_worker.start()) {
@@ -39,6 +43,7 @@ int main(int argc, char* argv[]) {
 
     DspEngineWorker dsp_worker(config, dsp_queue, &ui);
     transport.start();
+    dispatcher.start();
     dsp_worker.start();
 
     if (argc > 1) {
@@ -51,6 +56,7 @@ int main(int argc, char* argv[]) {
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [&]() {
         transport.stop();
+        dispatcher.stop();
         dsp_worker.stop();
         persist_worker.stop();
     });

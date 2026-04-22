@@ -11,7 +11,7 @@
 class PersistenceWorker {
 public:
     PersistenceWorker(const AppConfig& config,
-                      SpscRingBuffer<SharedBlockView>& persist_queue);
+                      SpscRingBuffer<AudioFramePtr>& persist_queue);
     ~PersistenceWorker();
 
     bool start();
@@ -19,14 +19,14 @@ public:
 
 private:
     void persist_loop();
-    void append_block(const SharedBlockView& block);
+    void append_block(const AudioFrame& block);
     bool flush_cache();
     void set_low_priority() const;
     bool drain_pending_blocks();
 
 private:
     AppConfig config_;
-    SpscRingBuffer<SharedBlockView>& persist_queue_;
+    SpscRingBuffer<AudioFramePtr>& persist_queue_;
 
     int output_fd_ = -1;
     std::vector<int32_t> write_cache_;

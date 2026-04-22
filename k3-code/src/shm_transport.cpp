@@ -17,10 +17,8 @@ namespace {
 constexpr int kPollTimeoutMs = 20;
 }
 
-SharedMemoryTransport::SharedMemoryTransport(const AppConfig& config,
-                                             SpscRingBuffer<SharedBlockView>& dsp_queue,
-                                             SpscRingBuffer<SharedBlockView>& persist_queue)
-    : config_(config), dsp_queue_(dsp_queue), persist_queue_(persist_queue) {}
+SharedMemoryTransport::SharedMemoryTransport(const AppConfig& config, SpscRingBuffer<AudioFramePtr>& ingress_queue)
+    : config_(config), ingress_queue_(ingress_queue) {}
 
 SharedMemoryTransport::~SharedMemoryTransport() { stop(); }
 
@@ -88,8 +86,7 @@ void SharedMemoryTransport::stop() {
 SharedMemoryTransport::Stats SharedMemoryTransport::stats() const {
     Stats s {};
     s.received_descriptors = received_descriptors_.load(std::memory_order_relaxed);
-    s.dropped_for_dsp_queue_full = dropped_for_dsp_queue_full_.load(std::memory_order_relaxed);
-    s.dropped_for_persist_queue_full = dropped_for_persist_queue_full_.load(std::memory_order_relaxed);
+    s.dropped_for_ingress_queue_full = dropped_for_ingress_queue_full_.load(std::memory_order_relaxed);
     s.malformed_descriptor = malformed_descriptor_.load(std::memory_order_relaxed);
     return s;
 }
@@ -124,18 +121,14 @@ void SharedMemoryTransport::ingest_loop() {
 
             received_descriptors_.fetch_add(1, std::memory_order_relaxed);
 
-            SharedBlockView block {};
-            if (!build_block(desc, block)) {
+            AudioFramePtr frame;
+            if (!build_frame(desc, frame)) {
                 malformed_descriptor_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
-            const SharedBlockView persist_block = block;
-            if (!dsp_queue_.push(std::move(block))) {
-                dropped_for_dsp_queue_full_.fetch_add(1, std::memory_order_relaxed);
-            }
-            if (!persist_queue_.push(persist_block)) {
-                dropped_for_persist_queue_full_.fetch_add(1, std::memory_order_relaxed);
+            if (!ingress_queue_.push(std::move(frame))) {
+                dropped_for_ingress_queue_full_.fetch_add(1, std::memory_order_relaxed);
             }
         }
     }
@@ -152,7 +145,7 @@ bool SharedMemoryTransport::read_descriptor(RpmsgDataDescriptor& desc) {
     return static_cast<size_t>(n) == sizeof(desc);
 }
 
-bool SharedMemoryTransport::build_block(const RpmsgDataDescriptor& desc, SharedBlockView& out_block) const {
+bool SharedMemoryTransport::build_frame(const RpmsgDataDescriptor& desc, AudioFramePtr& out_frame) const {
     if (shm_data_ptr_ == nullptr || desc.sample_count == 0 || desc.channels == 0) {
         return false;
     }
@@ -177,9 +170,11 @@ bool SharedMemoryTransport::build_block(const RpmsgDataDescriptor& desc, SharedB
     auto owned_samples = std::make_shared<std::vector<int32_t>>(total_samples);
     std::memcpy(owned_samples->data(), sample_ptr, byte_count);
 
-    out_block.desc = desc;
-    out_block.owned_samples = std::move(owned_samples);
-    out_block.samples = SampleView {out_block.owned_samples->data(), out_block.owned_samples->size()};
+    auto frame = std::make_shared<AudioFrame>();
+    frame->desc = desc;
+    frame->owned_samples = std::move(owned_samples);
+    frame->samples = SampleView {frame->owned_samples->data(), frame->owned_samples->size()};
+    out_frame = std::move(frame);
     return true;
 }
 

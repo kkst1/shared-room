@@ -27,11 +27,13 @@ struct SampleView {
     bool empty() const noexcept { return count == 0; }
 };
 
-struct SharedBlockView {
+struct AudioFrame {
     RpmsgDataDescriptor desc {};
     std::shared_ptr<std::vector<int32_t>> owned_samples;
     SampleView samples {};
 };
+
+using AudioFramePtr = std::shared_ptr<const AudioFrame>;
 
 struct DspUiFrame {
     uint32_t sequence = 0;
@@ -51,6 +53,7 @@ struct AppConfig {
     std::string persist_path = "/tmp/k3_capture.raw";
     size_t persist_flush_bytes = 4 * 1024 * 1024;
     bool persist_fsync_on_flush = false;
+    size_t ingress_capacity = 128;
     std::string alsa_device = "hw:0,0";
     uint32_t playback_rate = 48000;
     uint32_t playback_channels = 1;
