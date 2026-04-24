@@ -1,0 +1,54 @@
+工程架构
+不要照搬，可以在这个架构的基础上继续修改
+mem-analyzer/
+├── README.md
+├── Makefile
+├── bpftool_gen.sh              # 生成 skeleton
+├── vmlinux.h                  # BTF 生成（自动或预生成）
+│
+├── bpf/                       # 👈 内核态 eBPF 程序
+│   ├── mem.bpf.c
+│   ├── mem.h
+│   └── Makefile
+│
+├── user/                      # 👈 用户态程序
+│   ├── main.c
+│   ├── loader.c
+│   ├── analyzer.c
+│   ├── symbol.c
+│   └── include/
+│       └── mem_user.h
+│
+├── include/                   # 👈 共享头文件（内核/用户态）
+│   └── mem_common.h
+│
+├── scripts/
+│   ├── run.sh
+│   └── clean.sh
+│
+└── output/
+    └── (运行结果/日志)
+
+不要犯如下错误
+❌ 错误1：全部逻辑写在 eBPF
+👉 结果：写不动 + verifier 报错
+❌ 错误2：没有 stack trace
+👉 直接降级成“普通项目”
+❌ 错误3：没有统计分析
+👉 面试官会说：这不就是打印日志？
+❌ 错误4：没有 CO-RE
+👉 = demo 项目
+
+计划分为四步骤
+第一步
+跑通 libbpf + skeleton
+打印 kmalloc
+第二步
+ring buffer
+pid统计
+第三步
+histogram
+stack trace
+第四步
+symbol解析
+CO-RE

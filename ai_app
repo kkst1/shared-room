@@ -1,0 +1,647 @@
+项目名称：基于中转站 GPT Image API 的文生图 / 图生图网站架构
+
+一、项目定位
+
+这个项目的目标不是做一个“前端直接调 AI 接口”的 demo，而是做一个可上线、可扩展、可替换上游供应商的图像生成网站。
+
+用户能力：
+
+- 输入文本描述生成图片
+- 上传参考图，再结合文本生成图片
+- 查看生成历史
+- 下载生成结果
+- 后续支持“基于历史结果继续编辑”
+
+技术现实：
+
+- 实际调用的不是 OpenAI 官方直连，而是中转站提供的 GPT Image API
+- 中转站通常兼容 OpenAI 风格请求，但不应假设所有字段、错误码、限速行为都完全一致
+
+所以这个项目最合理的架构原则是：
+
+- 前端绝不直连中转站
+- 后端统一封装上游 API
+- 网站内部只依赖“自己的图像生成服务接口”
+- 中转站只是一个可替换的 Provider
+
+
+二、核心设计原则
+
+1. 不把中转站耦合进前端
+- 前端只调用你自己的后端接口
+- 中转站域名、密钥、模型名、请求格式变化都只影响后端
+
+2. 先做最短可用路径
+- 第一版先做同步调用
+- 先不做复杂队列
+- 先不做多轮编辑
+- 先打通“输入 -> 生成 -> 展示 -> 下载”
+
+3. 后端一定要做 Provider Adapter
+- 不让业务代码到处写第三方 API 请求
+- 后续切换中转站、切回官方 API、切换别的兼容服务都更容易
+
+4. 存储与任务要分层
+- 生成请求是任务
+- 图片文件是对象
+- 历史页面读的是数据库，不是读接口缓存
+
+
+三、推荐的最优实现路线
+
+这是最可靠、最快速的一条路线：
+
+- 前端：Next.js
+- 后端：Next.js Route Handlers
+- 数据库：PostgreSQL + Prisma
+- 文件存储：本地磁盘起步，后续换 MinIO / S3
+- 上游：中转站 GPT Image API
+- 调用方式：服务端 `fetch` / axios 直调中转站
+
+原因：
+
+- 只有一个仓库，开发快
+- 前后端都在 Next.js，最适合个人项目快速交付
+- Prisma 能快速落库历史记录
+- 本地文件存储足够做 MVP
+- 中转站只需在服务端封装一次
+
+不建议第一版就做：
+
+- 微服务
+- 消息队列
+- Redis 必选
+- 多模型路由
+- 多轮工作流编排
+
+这些会拖慢上线速度。
+
+
+四、整体架构
+
+整体采用四层：
+
+1. Web UI 层
+- Next.js 页面
+- 负责输入、上传、展示、历史列表
+
+2. App API 层
+- Next.js Route Handlers
+- 负责鉴权、参数校验、文件接收、任务创建、调用生成服务、结果返回
+
+3. Domain Service 层
+- 你的业务核心
+- 负责把“文本 / 图片输入”转换成统一的生成请求
+- 负责调用 Provider Adapter
+- 负责持久化任务和结果
+
+4. Provider 层
+- 中转站 GPT Image API 适配器
+- 屏蔽中转站的 URL、鉴权方式、模型字段、错误格式
+
+
+五、模块划分
+
+1. 前端模块
+
+- `PromptEditor`
+  - 输入 prompt
+  - 可选 negative prompt
+
+- `ImageUploader`
+  - 上传参考图
+  - 本地预览
+
+- `GenerateButton`
+  - 发起生成
+  - 展示 loading
+
+- `ResultViewer`
+  - 展示图片
+  - 支持下载
+
+- `HistoryList`
+  - 历史记录
+
+- `TaskDetail`
+  - 展示某次任务的输入、参数、输出
+
+
+2. 后端模块
+
+- `auth`
+  - 登录、注册、session
+  - 如果只是个人项目，第一版甚至可以先不做注册，只做匿名 + 限流
+
+- `upload`
+  - 接收图片
+  - 校验格式和大小
+  - 保存输入图
+
+- `generation`
+  - 创建生成任务
+  - 调用 provider
+  - 保存输出图
+  - 更新任务状态
+
+- `history`
+  - 查询历史任务
+  - 查询任务详情
+
+- `provider`
+  - 中转站 API 封装
+  - 请求重试、错误解析、超时控制
+
+
+六、推荐的数据流
+
+第一版最合适的数据流：
+
+1. 用户打开生成页
+2. 输入 prompt，选择是否上传参考图
+3. 前端把表单发给 `/api/generate`
+4. 后端校验参数
+5. 如果有输入图：
+  - 保存到本地 `uploads/`
+  - 或转换成 base64
+6. 后端生成统一的 `GenerateImageCommand`
+7. `generation service` 调用 `provider adapter`
+8. `provider adapter` 请求中转站 GPT Image API
+9. 中转站返回 base64 图片或图片 URL
+10. 后端把结果图存到本地 `outputs/`
+11. 后端写数据库：
+  - task
+  - input image metadata
+  - output image metadata
+12. 返回前端结果
+13. 前端展示生成图
+
+
+七、Domain 模型设计
+
+后端内部建议统一成你自己的领域对象，而不是直接暴露中转站字段。
+
+1. 输入命令
+
+`GenerateImageCommand`
+
+字段建议：
+
+- `userId`
+- `prompt`
+- `negativePrompt`
+- `mode`
+  - `text_to_image`
+  - `image_to_image`
+- `inputImagePath`
+- `size`
+- `quality`
+- `style`
+- `count`
+
+2. 任务实体
+
+`GenerationTask`
+
+- `id`
+- `userId`
+- `mode`
+- `prompt`
+- `status`
+  - `pending`
+  - `processing`
+  - `succeeded`
+  - `failed`
+- `provider`
+- `providerModel`
+- `errorMessage`
+- `createdAt`
+- `completedAt`
+
+3. 结果实体
+
+`GeneratedAsset`
+
+- `id`
+- `taskId`
+- `localPath`
+- `publicUrl`
+- `mimeType`
+- `width`
+- `height`
+
+
+八、数据库设计
+
+最小表结构建议：
+
+1. `users`
+
+- `id`
+- `email`
+- `password_hash`
+- `created_at`
+
+2. `generation_tasks`
+
+- `id`
+- `user_id`
+- `mode`
+- `prompt`
+- `negative_prompt`
+- `status`
+- `provider`
+- `provider_model`
+- `size`
+- `quality`
+- `style`
+- `error_message`
+- `created_at`
+- `completed_at`
+
+3. `input_images`
+
+- `id`
+- `task_id`
+- `file_path`
+- `mime_type`
+- `file_size`
+
+4. `output_images`
+
+- `id`
+- `task_id`
+- `file_path`
+- `mime_type`
+- `width`
+- `height`
+
+5. `provider_logs`
+
+- `id`
+- `task_id`
+- `request_id`
+- `provider_status`
+- `latency_ms`
+- `raw_error`
+- `created_at`
+
+
+九、Provider Adapter 设计
+
+这是这个项目最关键的部分。
+
+不要在业务代码里直接写：
+
+- 中转站 URL
+- Authorization header
+- 具体模型名
+- 原始返回格式解析
+
+应该抽成：
+
+`ImageProvider`
+
+接口示例：
+
+- `generateTextToImage(command)`
+- `generateImageToImage(command)`
+
+返回统一结果：
+
+- `success`
+- `images[]`
+- `providerRequestId`
+- `revisedPrompt`
+- `error`
+
+中转站适配器实现：
+
+`ProxyGptImageProvider`
+
+职责：
+
+- 读取环境变量
+  - `IMAGE_PROVIDER_BASE_URL`
+  - `IMAGE_PROVIDER_API_KEY`
+  - `IMAGE_PROVIDER_MODEL`
+
+- 发请求到中转站
+- 处理超时
+- 处理错误码
+- 处理 base64 / url 类型返回
+- 转换成你的统一结果对象
+
+这样未来你可以：
+
+- 改中转站地址
+- 换另一个兼容站
+- 切回 OpenAI 官方
+
+只需要改这一层。
+
+
+十、图片输入的推荐做法
+
+因为你实际是走中转站，最稳妥的第一版做法是：
+
+- 用户上传图片到你的后端
+- 后端读文件并转成 base64
+- 直接作为请求的一部分发给中转站
+
+为什么这样最稳：
+
+- 不依赖中转站是否支持文件上传接口
+- 不依赖中转站是否支持 file_id
+- 不依赖外部对象存储的公开 URL
+- 先把“图生图”最短路径打通
+
+等第一版稳定后，再升级为：
+
+- 输入图存对象存储
+- 后端传图片 URL 给上游
+
+
+十一、输出图片的推荐做法
+
+第一版：
+
+- 中转站如果返回 base64
+- 后端解码后写到本地目录：
+  - `storage/outputs/{taskId}.png`
+
+然后提供：
+
+- `/api/assets/:id`
+  - 受控访问图片
+
+好处：
+
+- 最快可用
+- 不需要先接 S3
+- 最适合本地开发和 demo
+
+第二版再替换为：
+
+- MinIO / S3 / R2
+
+
+十二、前端架构
+
+推荐技术栈：
+
+- Next.js App Router
+- TypeScript
+- Tailwind CSS
+- shadcn/ui
+- React Hook Form
+- Zod
+
+推荐页面：
+
+1. `/`
+- 首页
+- 放示例图
+- 放“立即开始”
+
+2. `/generate`
+- 主生成页
+
+3. `/history`
+- 历史记录
+
+4. `/history/[id]`
+- 任务详情
+
+前端请求模式：
+
+- 第一版直接调用后端同步接口
+- 用户点“生成”后等待结果返回
+
+如果生成时间较长，可以先在页面上做：
+
+- loading 状态
+- 生成中 spinner
+- 请求超时提示
+
+
+十三、后端接口设计
+
+最小接口集合：
+
+1. `POST /api/generate`
+
+输入：
+
+- `prompt`
+- `negativePrompt`
+- `size`
+- `quality`
+- `style`
+- `inputImage`
+
+输出：
+
+- `taskId`
+- `status`
+- `images`
+- `revisedPrompt`
+
+2. `GET /api/history`
+
+输出：
+
+- 历史任务列表
+
+3. `GET /api/history/:id`
+
+输出：
+
+- 某个任务详情
+
+4. `GET /api/assets/:id`
+
+输出：
+
+- 图片文件流
+
+
+十四、同步与异步选择
+
+第一版最可靠、最快速的路线：同步
+
+也就是：
+
+- 前端发起生成请求
+- 后端直接请求中转站
+- 中转站返回结果
+- 后端保存文件和数据库
+- 一次性返回前端
+
+优点：
+
+- 实现最简单
+- 逻辑最短
+- 最容易调试
+
+缺点：
+
+- 生成慢时用户等待更久
+
+但对第一版来说，这是最好的取舍。
+
+等你后面需要更稳定的产品体验，再改成：
+
+- 任务入库
+- worker 处理
+- 前端轮询
+
+
+十五、安全设计
+
+1. 中转站密钥只放后端
+
+- 放 `.env`
+- 前端绝不暴露
+
+2. 上传限制
+
+- 限制 MIME
+- 限制大小，例如 5MB 或 10MB
+- 只允许 jpg/png/webp
+
+3. 限流
+
+- 匿名用户按 IP 限制
+- 登录用户按 userId 限制
+
+4. 日志
+
+- 记录 taskId
+- 记录 provider latency
+- 记录失败原因
+- 不记录用户隐私原图内容到普通日志
+
+
+十六、最可靠的实现路径
+
+这条路线是最适合你立刻开工的。
+
+阶段 1：最小可用版本
+
+只做：
+
+- 一个生成页面
+- 文本输入
+- 可选图片上传
+- 一个后端 `/api/generate`
+- 服务端调用中转站 GPT Image API
+- 结果图片保存本地
+- 页面展示图片
+
+这一步不要做：
+
+- 用户系统
+- Redis
+- 队列
+- 对象存储
+- 多轮编辑
+
+阶段 2：补历史记录
+
+新增：
+
+- PostgreSQL
+- Prisma
+- `generation_tasks`
+- `output_images`
+- 历史页
+
+阶段 3：补鉴权和限流
+
+新增：
+
+- 登录
+- 用户隔离
+- 配额限制
+
+阶段 4：补对象存储
+
+把：
+
+- 本地 `storage/`
+
+替换成：
+
+- MinIO / S3 / R2
+
+阶段 5：补异步任务
+
+新增：
+
+- Redis
+- BullMQ
+- worker
+
+
+十七、推荐目录结构
+
+如果你用 Next.js 单仓实现：
+
+`app/`
+- `page.tsx`
+- `generate/page.tsx`
+- `history/page.tsx`
+- `history/[id]/page.tsx`
+- `api/generate/route.ts`
+- `api/history/route.ts`
+- `api/history/[id]/route.ts`
+- `api/assets/[id]/route.ts`
+
+`components/`
+- `prompt-form.tsx`
+- `image-upload.tsx`
+- `result-grid.tsx`
+- `history-table.tsx`
+
+`lib/`
+- `db.ts`
+- `storage.ts`
+- `validators.ts`
+- `auth.ts`
+
+`server/`
+- `generation-service.ts`
+- `provider/image-provider.ts`
+- `provider/proxy-gpt-image-provider.ts`
+
+`prisma/`
+- `schema.prisma`
+
+`storage/`
+- `uploads/`
+- `outputs/`
+
+
+十八、最推荐的最终技术选型
+
+直接定这一套：
+
+- 前端：Next.js + TypeScript + Tailwind
+- 后端：Next.js Route Handlers
+- 数据库：PostgreSQL + Prisma
+- 文件：本地磁盘起步
+- 上游：中转站 GPT Image API
+- Provider 适配：服务端单独封装
+
+这是最快上线、最少踩坑、后续还能扩展的一套方案。
+
+
+十九、你在简历或项目介绍里可以怎么说
+
+“实现了一个基于中转站 GPT Image API 的文生图 / 图生图网站，采用 Next.js 全栈架构，前端负责 prompt 与图片输入，后端统一封装第三方图像生成接口，完成任务创建、图片接入、结果存储与历史记录管理；通过 Provider Adapter 解耦上游中转站实现，为后续切换供应商、增加异步任务和对象存储留出架构空间。”
+
+
+二十、一句话总结
+
+这个项目最合理的实现方式，不是前端直接调用中转站，而是：用 Next.js 做一个单体全栈应用，在后端封装中转站 GPT Image API 适配层，第一版先走同步生成、本地文件存储和数据库历史记录，把“文生图 / 图生图 / 展示 / 下载 / 历史”完整跑通，再逐步升级为对象存储、用户系统和异步任务架构。

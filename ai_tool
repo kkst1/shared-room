@@ -1,0 +1,112 @@
+实现这个 AI 图片生成网站，电脑上建议安装如下工具。
+
+一、必须安装
+
+1. Node.js
+- 建议版本：20 或更高
+- 用来运行 Next.js、TypeScript、Prisma 和后端服务
+
+2. npm 或 pnpm
+- 推荐：pnpm
+- 用来安装和管理项目依赖
+
+3. Git
+- 用来管理代码版本
+
+4. PostgreSQL
+- 用来保存用户、任务、历史记录、图片元数据
+
+5. 代码编辑器
+- 推荐：VS Code
+
+
+二、项目开发依赖
+
+这些一般不需要全局安装，在项目目录里通过包管理器安装即可：
+
+- Next.js
+- React
+- TypeScript
+- Prisma
+- Zod
+- Tailwind CSS
+
+
+三、如果第一版只做本地文件存储
+
+不需要额外安装对象存储服务。
+
+本地磁盘目录即可，例如：
+
+- `storage/uploads`
+- `storage/outputs`
+
+
+四、后续升级时建议安装
+
+1. Redis
+- 用于限流、缓存、异步任务队列
+
+2. Docker
+- 强烈建议安装
+- 方便本地启动 PostgreSQL、Redis、MinIO
+
+3. MinIO
+- 如果后面要把本地文件存储升级为对象存储，可以安装 MinIO
+
+
+五、推荐安装的辅助工具
+
+1. nvm
+- 用来管理 Node.js 版本
+
+2. Postman 或 Insomnia
+- 用来测试后端接口
+
+3. DBeaver 或 TablePlus
+- 用来查看 PostgreSQL 数据
+
+4. curl
+- 用来直接测试中转站 GPT Image API
+
+
+六、中转站接入还需要准备
+
+除了本地开发工具，你还需要从中转站拿到这些信息：
+
+- Base URL
+- API Key
+- 支持的模型名
+- 请求格式说明
+
+
+七、最小可开工环境
+
+如果你想最快开始，最少装这些：
+
+- Node.js
+- pnpm
+- PostgreSQL
+- Git
+- VS Code
+
+
+八、推荐的完整本地开发环境
+
+推荐安装这一套：
+
+- Node.js
+- pnpm
+- Git
+- PostgreSQL
+- VS Code
+- nvm
+- Docker
+- Redis
+- Postman
+- DBeaver
+
+
+九、一句话总结
+
+最快开工只需要 `Node.js + pnpm + PostgreSQL + Git + VS Code`；如果想让后续开发更顺手，建议再补上 `Docker + Redis + nvm + Postman + DBeaver`。
