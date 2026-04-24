@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini / ChatGPT 商品解析</title>
+  <style>
+    :root {
+      --bg: linear-gradient(180deg, #f6f0e8 0%, #fffdf8 45%, #f4f7fb 100%);
+      --panel: rgba(255, 255, 255, 0.84);
+      --panel-border: rgba(26, 43, 60, 0.08);
+      --text: #16212d;
+      --muted: #5d6975;
+      --accent: #0d6e6e;
+      --accent-2: #cc7a00;
+      --good: #17633d;
+      --warn: #8a5a00;
+      --bad: #9f2f1f;
+      --shadow: 0 20px 60px rgba(37, 50, 65, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto;
+      z-index: 0;
+      pointer-events: none;
+      filter: blur(20px);
+    }
+
+    body::before {
+      width: 280px;
+      height: 280px;
+      top: 32px;
+      right: 4vw;
+      background: rgba(13, 110, 110, 0.12);
+      border-radius: 42% 58% 63% 37% / 43% 34% 66% 57%;
+    }
+
+    body::after {
+      width: 320px;
+      height: 320px;
+      bottom: 20px;
+      left: 2vw;
+      background: rgba(204, 122, 0, 0.1);
+      border-radius: 68% 32% 52% 48% / 47% 53% 47% 53%;
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 40px 16px 56px;
+    }
+
+    .hero {
+      margin-bottom: 22px;
+      padding: 28px;
+      border: 1px solid var(--panel-border);
+      border-radius: 28px;
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 26px;
+      height: 1px;
+      background: currentColor;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 5vw, 46px);
+      line-height: 1.06;
+      font-weight: 800;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 720px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 15px;
+    }
+
+    .search-panel,
+    .result-panel {
+      border: 1px solid var(--panel-border);
+      border-radius: 28px;
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow);
+    }
+
+    .search-panel {
+      padding: 22px;
+      margin-bottom: 18px;
+    }
+
+    .input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+    }
+
+    input {
+      width: 100%;
+      height: 52px;
+      padding: 0 16px;
+      border: 1px solid rgba(26, 43, 60, 0.14);
+      border-radius: 16px;
+      font-size: 15px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.92);
+      outline: none;
+    }
+
+    input:focus {
+      border-color: rgba(13, 110, 110, 0.5);
+      box-shadow: 0 0 0 4px rgba(13, 110, 110, 0.1);
+    }
+
+    button {
+      height: 52px;
+      padding: 0 22px;
+      border: 0;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #0d6e6e 0%, #154d6d 100%);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.65;
+      cursor: wait;
+    }
+
+    .tips {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .history {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .chip {
+      padding: 7px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(26, 43, 60, 0.1);
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--accent);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .status {
+      min-height: 24px;
+      margin: 10px 2px 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status.error { color: var(--bad); }
+
+    .result-panel {
+      overflow: hidden;
+    }
+
+    .result-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 14px;
+      padding: 20px 22px 16px;
+      border-bottom: 1px solid rgba(26, 43, 60, 0.08);
+    }
+
+    .result-head h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .meta {
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .meta a {
+      color: var(--accent);
+      text-decoration: none;
+      word-break: break-all;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 82px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .badge.gemini {
+      background: rgba(13, 110, 110, 0.12);
+      color: var(--accent);
+    }
+
+    .badge.chatgpt {
+      background: rgba(204, 122, 0, 0.12);
+      color: var(--accent-2);
+    }
+
+    .stock {
+      font-weight: 700;
+    }
+
+    .stock.good { color: var(--good); }
+    .stock.warn { color: var(--warn); }
+    .stock.bad { color: var(--bad); }
+    .stock.na { color: var(--muted); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 15px 22px;
+      text-align: left;
+      border-bottom: 1px solid rgba(26, 43, 60, 0.07);
+      vertical-align: middle;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    td {
+      font-size: 14px;
+    }
+
+    td.name {
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    td.price {
+      color: var(--good);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .empty {
+      padding: 30px 22px 36px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    @media (max-width: 720px) {
+      .page { padding-top: 24px; }
+      .hero, .search-panel { padding: 18px; }
+      .input-row { grid-template-columns: 1fr; }
+      table, thead, tbody, th, td, tr { display: block; }
+      thead { display: none; }
+      tr { padding: 12px 0; }
+      td {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 18px;
+      }
+      td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      td.name { display: block; padding-bottom: 4px; }
+      td.name::before { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">AI Goods Filter</div>
+      <h1>解析指定网页里的 Gemini / ChatGPT 商品</h1>
+      <p>输入一个商品页面地址，系统会自动提取网站名、网址、商品名、价格和数量，并且只展示名称里包含 <strong>gemini</strong> 或 <strong>chatgpt</strong> 的商品。</p>
+    </section>
+
+    <section class="search-panel">
+      <div class="input-row">
+        <input id="urlInput" type="text" placeholder="输入网址，例如 https://pay.ldxp.cn/shop/AMWSAY50">
+        <button id="parseButton" type="button">开始解析</button>
+      </div>
+      <div class="tips">推荐直接访问 `http://127.0.0.1:5000`，也兼容直接双击打开当前 HTML 文件。</div>
+      <div id="history" class="history"></div>
+    </section>
+
+    <div id="status" class="status"></div>
+    <section id="result" class="result-panel" hidden></section>
+  </main>
+
+  <script>
+    const historyKey = "web_parser_history";
+    const apiBase = window.location.protocol === "file:"
+      ? "http://127.0.0.1:5000"
+      : window.location.origin;
+    const parseApi = `${apiBase}/parse`;
+    const parseButton = document.getElementById("parseButton");
+    const urlInput = document.getElementById("urlInput");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const historyEl = document.getElementById("history");
+    let historyList = JSON.parse(localStorage.getItem(historyKey) || "[]");
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function normalizeUrl(url) {
+      const trimmed = url.trim();
+      if (!trimmed) return "";
+      return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    }
+
+    function saveHistory(url) {
+      historyList = [url, ...historyList.filter(item => item !== url)].slice(0, 6);
+      localStorage.setItem(historyKey, JSON.stringify(historyList));
+      renderHistory();
+    }
+
+    function renderHistory() {
+      historyEl.innerHTML = historyList.map(url => (
+        `<button class="chip" type="button" data-url="${url}">${url}</button>`
+      )).join("");
+    }
+
+    function priceLabel(value) {
+      if (value === null || value === undefined) return "—";
+      return `¥${Number(value).toLocaleString("zh-CN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}`;
+    }
+
+    function stockText(value) {
+      if (value === null || value === undefined) return { text: "未知", cls: "na" };
+      if (value === 0) return { text: "缺货", cls: "bad" };
+      if (value <= 10) return { text: `${value} 件`, cls: "warn" };
+      return { text: `${value} 件`, cls: "good" };
+    }
+
+    function renderResult(data) {
+      const products = data.products || [];
+      resultEl.hidden = false;
+
+      if (!products.length) {
+        resultEl.innerHTML = `
+          <div class="result-head">
+            <h2>${data.site_name || "未知网站"}</h2>
+            <div class="meta">
+              <span>网址</span>
+              <a href="${data.url}" target="_blank" rel="noreferrer">${data.url}</a>
+            </div>
+          </div>
+          <div class="empty">没有找到名称包含 gemini 或 chatgpt 的商品，或者当前网页未暴露可解析的价格/库存信息。</div>
+        `;
+        return;
+      }
+
+      const rows = products.map(item => {
+        const stock = stockText(item.stock);
+        return `
+          <tr>
+            <td class="name">${item.name}</td>
+            <td data-label="分类"><span class="badge ${item.keyword}">${item.keyword}</span></td>
+            <td class="price" data-label="价格">${priceLabel(item.price)}</td>
+            <td data-label="数量"><span class="stock ${stock.cls}">${stock.text}</span></td>
+          </tr>
+        `;
+      }).join("");
+
+      resultEl.innerHTML = `
+        <div class="result-head">
+          <h2>${data.site_name || "未知网站"}</h2>
+          <div class="meta">
+            <span>网址</span>
+            <a href="${data.url}" target="_blank" rel="noreferrer">${data.url}</a>
+            <span>命中商品 ${products.length} 个</span>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>商品名称</th>
+              <th>分类</th>
+              <th>价格</th>
+              <th>数量</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    async function parseSite() {
+      const url = normalizeUrl(urlInput.value);
+      if (!url) {
+        setStatus("请输入网址", true);
+        return;
+      }
+
+      parseButton.disabled = true;
+      resultEl.hidden = true;
+      setStatus("正在解析页面，遇到防护站点可能需要 5 到 15 秒。");
+
+      try {
+        const response = await fetch(parseApi, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url })
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error || "解析失败");
+        }
+
+        saveHistory(url);
+        renderResult(data);
+        setStatus(`解析完成，筛选出 ${data.products.length} 个目标商品。`);
+      } catch (error) {
+        setStatus(error.message || "解析失败", true);
+      } finally {
+        parseButton.disabled = false;
+      }
+    }
+
+    parseButton.addEventListener("click", parseSite);
+    urlInput.addEventListener("keydown", event => {
+      if (event.key === "Enter") parseSite();
+    });
+
+    historyEl.addEventListener("click", event => {
+      const button = event.target.closest("[data-url]");
+      if (!button) return;
+      urlInput.value = button.dataset.url;
+      parseSite();
+    });
+
+    renderHistory();
+  </script>
+</body>
+</html>
