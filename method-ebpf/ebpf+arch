@@ -1,0 +1,295 @@
+# 基于 eBPF 的 Linux 内存行为分析与异常检测系统架构
+
+## 一、项目定位
+
+本项目不是简单打印 kmalloc 日志，而是一个面向 Linux 内核内存行为的观测与分析工具。
+
+核心能力：
+- 观测内核内存分配/释放行为。
+- 按进程、大小区间、调用栈聚合统计。
+- 定位内存分配热点。
+- 发现长时间未释放的疑似泄漏对象。
+- 通过 CO-RE 提升跨内核版本兼容性。
+
+## 二、总体架构
+
+```text
+                    +-----------------------------+
+                    |          User CLI/UI         |
+                    | top / hist / stack / leak    |
+                    +--------------+--------------+
+                                   |
+                                   v
+                    +-----------------------------+
+                    |        用户态分析层          |
+                    |-----------------------------|
+                    | PID 统计                     |
+                    | Histogram                    |
+                    | Stack TopN                   |
+                    | Leak Suspect                 |
+                    | Symbol Resolve               |
+                    +--------------+--------------+
+                                   |
+                         ring buffer / maps
+                                   |
+                                   v
+                    +-----------------------------+
+                    |        eBPF 内核采集层       |
+                    |-----------------------------|
+                    | tracepoint/kprobe            |
+                    | kmalloc / kfree              |
+                    | kmem_cache_alloc/free        |
+                    | optional: page alloc/free    |
+                    |                             |
+                    | maps:                        |
+                    | events ringbuf               |
+                    | pid stats                    |
+                    | alloc table                  |
+                    | stack trace                  |
+                    | histogram                    |
+                    +--------------+--------------+
+                                   |
+                                   v
+                    +-----------------------------+
+                    |      Linux 内核内存子系统    |
+                    +-----------------------------+
+```
+
+## 三、模块设计
+
+### 1. eBPF 数据采集层
+
+职责：只做轻量采集，不做复杂业务分析。
+
+覆盖点：
+- `kmalloc`
+- `kfree`
+- `kmem_cache_alloc`
+- `kmem_cache_free`
+- 进阶：`mm_page_alloc` / `mm_page_free`
+
+采集字段：
+- `pid`
+- `tgid`
+- `comm`
+- `size`
+- `ptr`
+- `timestamp_ns`
+- `stack_id`
+- `event_type`
+
+关键 eBPF API：
+- `bpf_get_current_pid_tgid`
+- `bpf_get_current_comm`
+- `bpf_ktime_get_ns`
+- `bpf_get_stackid`
+- `bpf_ringbuf_reserve`
+- `bpf_ringbuf_submit`
+
+设计原则：
+- eBPF 侧只做必要过滤和轻量统计。
+- 复杂排序、符号解析、超时判断放到用户态。
+- 使用 map 保存必要状态，例如 `ptr -> alloc_info`。
+
+### 2. 数据传输层
+
+推荐使用 ring buffer。
+
+选择原因：
+- 内存分配事件频率高，ring buffer 更适合高频事件传输。
+- 相比 perf buffer，ring buffer API 更直接，开销更低。
+- 用户态消费模型清晰，适合实时 CLI 展示。
+
+需要考虑：
+- ring buffer 满时可能丢事件，需要记录 dropped count。
+- 高频场景下不能每个事件都做昂贵处理。
+- 可提供采样或 PID 过滤能力降低压力。
+
+### 3. 用户态分析层
+
+这是项目价值所在。
+
+#### PID 统计
+
+统计维度：
+- alloc count
+- free count
+- total allocated bytes
+- total freed bytes
+- active bytes
+
+输出：
+- TopN 进程。
+- 指定 PID 详情。
+- 周期刷新。
+
+#### Histogram 分配模式
+
+使用 log2 bucket：
+- `0-64B`
+- `64-256B`
+- `256B-1KB`
+- `1KB-4KB`
+- `4KB-16KB`
+- `16KB+`
+
+价值：
+- 快速判断系统主要分配小对象还是大对象。
+- 对比不同进程或不同时间窗口的分配行为。
+
+#### Stack Trace 热点
+
+核心逻辑：
+- 分配事件携带 `stack_id`。
+- 用户态按 `stack_id` 聚合 `count` 和 `bytes`。
+- 输出 TopN 调用栈。
+
+价值：
+- 能回答“是谁分配了最多内存”。
+- 比单纯按 PID 统计更接近真实问题定位。
+
+#### 疑似泄漏检测
+
+核心逻辑：
+- alloc：记录 `ptr -> {size, timestamp, pid, stack_id}`。
+- free：删除对应 `ptr`。
+- 周期扫描仍未释放的对象。
+- 超过时间窗口的对象标记为 suspect leak。
+
+参数：
+- `--leak-after 10s`
+- `--min-size 4096`
+- `--pid <pid>`
+
+注意：
+- 这是疑似泄漏检测，不是严格证明内存泄漏。
+- 需要在 README 中说明限制，避免过度承诺。
+
+### 4. 符号解析层
+
+目标：把调用栈地址转换为函数名。
+
+可选方案：
+- `/proc/kallsyms`
+- BTF
+- libbpf 辅助能力
+
+输出要求：
+- 展示函数名。
+- 地址作为 fallback。
+- 权限不足时给出明确提示。
+
+常见限制：
+- `/proc/sys/kernel/kptr_restrict` 可能隐藏地址。
+- 非 root 用户可能无法读取完整符号。
+- 不同发行版内核符号可见性不同。
+
+### 5. CO-RE 兼容层
+
+必须能讲清楚：
+
+> 我使用 CO-RE + BTF 让 eBPF 程序适配不同内核版本，避免硬编码结构体偏移。构建时通过 `vmlinux.h` 和 skeleton 生成用户态加载代码，运行时由 libbpf 根据目标内核 BTF 做重定位。
+
+项目中体现：
+- 使用 `vmlinux.h`。
+- 使用 `SEC("...")` 定义 eBPF hook。
+- 使用 skeleton 加载和 attach。
+- 避免依赖固定内核结构体偏移。
+
+## 四、关键数据结构
+
+```c
+enum event_type {
+    EVENT_ALLOC = 1,
+    EVENT_FREE = 2,
+};
+
+struct mem_event {
+    __u32 pid;
+    __u32 tgid;
+    char comm[16];
+    __u64 size;
+    __u64 ptr;
+    __u64 timestamp_ns;
+    __s32 stack_id;
+    __u32 type;
+};
+
+struct alloc_info {
+    __u64 size;
+    __u64 timestamp_ns;
+    __u32 pid;
+    __s32 stack_id;
+};
+```
+
+## 五、CLI 设计
+
+```text
+mem-analyzer [options]
+
+Options:
+  --pid <pid>             只分析指定进程
+  --top <n>               输出 TopN，默认 10
+  --interval <sec>        刷新间隔，默认 1
+  --hist                  显示分配大小分布
+  --stack                 显示调用栈热点
+  --leak                  开启疑似泄漏检测
+  --leak-after <sec>      超过多少秒未释放算疑似泄漏
+  --min-size <bytes>      过滤小分配
+  --duration <sec>        运行指定时长后退出
+```
+
+## 六、示例输出
+
+```text
+Top processes by active kernel allocation
+PID     COMM        ALLOC    FREE     ACTIVE_BYTES
+1234    nginx       20481    20311    18.4MB
+881     dockerd     9912     9820     7.1MB
+
+Allocation histogram
+0-64B       18231
+64-256B     9912
+256B-1KB    3210
+1KB-4KB      812
+4KB-16KB      91
+
+Top allocation stacks
+18.4MB  20481 calls
+  kmem_cache_alloc
+  ...
+
+Suspect leaks
+PID     COMM      SIZE     AGE     STACK
+1234    nginx     4096     15s     kmem_cache_alloc -> ...
+```
+
+## 七、面试高频问题
+
+为什么不用普通日志？
+- 内存分配路径频率高，普通日志开销大，而且缺少结构化聚合能力。
+
+为什么用 ring buffer？
+- 高频事件传输更轻量，用户态消费简单，适合实时分析。
+
+为什么复杂逻辑放用户态？
+- eBPF verifier 对循环、栈空间、指针访问、程序复杂度都有约束。内核态只做采集和轻量统计，用户态做复杂分析更稳定。
+
+为什么 stack trace 是亮点？
+- 只知道哪个 PID 分配多还不够，stack trace 能定位具体调用路径，直接服务问题排查。
+
+CO-RE 解决什么问题？
+- 解决不同内核版本结构体布局差异带来的兼容性问题，避免硬编码偏移。
+
+泄漏检测准确吗？
+- 工具报告的是疑似泄漏。长时间未释放不一定是真泄漏，可能是缓存或长期生命周期对象，因此需要结合调用栈和业务场景判断。
+
+## 八、项目最终亮点
+
+- 内核态 eBPF 轻量采集，用户态完成复杂分析。
+- ring buffer 支持高频内存事件传输。
+- stack trace + symbol resolve 定位真实分配热点。
+- histogram 展示内存分配模式。
+- ptr 生命周期跟踪实现疑似泄漏检测。
+- CO-RE + BTF 提供跨内核版本兼容能力。

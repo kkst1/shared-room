@@ -1,0 +1,201 @@
+# eBPF 内存管理项目两个月执行计划
+
+目标：用 8 周完成一个可演示、可写进简历、可在面试中讲清楚的 eBPF Linux 内存行为分析与异常检测项目。
+
+项目名建议：mem-analyzer
+
+核心成果：
+- 使用 libbpf + CO-RE + BPF skeleton 构建跨内核版本兼容的 eBPF 项目。
+- 采集 kmalloc/kfree、kmem_cache_alloc/kmem_cache_free，可选扩展 page alloc/free。
+- 通过 ring buffer 或 map 聚合传输内存事件。
+- 支持按 PID、分配大小、调用栈统计内存热点。
+- 支持 histogram、TopN、疑似泄漏检测、符号解析。
+- 提供 CLI 输出、README、架构图、演示脚本和面试讲解材料。
+
+## 推荐工程结构
+
+```text
+mem-analyzer/
+├── README.md
+├── Makefile
+├── bpftool_gen.sh
+├── vmlinux.h
+├── bpf/
+│   ├── mem.bpf.c
+│   ├── mem.h
+│   └── Makefile
+├── user/
+│   ├── main.c
+│   ├── loader.c
+│   ├── analyzer.c
+│   ├── symbol.c
+│   └── include/
+│       └── mem_user.h
+├── include/
+│   └── mem_common.h
+├── scripts/
+│   ├── run.sh
+│   ├── stress_alloc.sh
+│   └── clean.sh
+├── docs/
+│   ├── architecture.md
+│   ├── design-tradeoffs.md
+│   └── interview-notes.md
+└── output/
+    └── sample.log
+```
+
+## 8 周路线图
+
+### 第 1 周：环境与最小闭环
+
+目标：跑通 libbpf + skeleton，从内核态 eBPF 到用户态打印事件。
+
+任务：
+- 准备 Linux 开发环境：clang、llvm、bpftool、libbpf、make、kernel headers。
+- 生成或准备 `vmlinux.h`。
+- 写最小 eBPF 程序，挂载一个稳定 tracepoint 或 kprobe。
+- 使用 skeleton 在用户态加载、attach、poll。
+- README 写清楚环境版本、构建命令、运行命令。
+
+验收：
+- `make` 成功。
+- 用户态程序能稳定启动和退出。
+- 能打印至少一种内核事件。
+
+### 第 2 周：采集 kmalloc/kfree
+
+目标：采集内核内存分配/释放事件，建立项目核心数据模型。
+
+任务：
+- 挂载 `kmalloc` / `kfree`，优先使用 tracepoint；不稳定时再使用 kprobe。
+- 事件字段包含：pid、tgid、comm、size、ptr、timestamp。
+- 定义共享事件结构 `mem_event`，放入 `include/mem_common.h`。
+- 用户态解析事件并格式化输出。
+
+验收：
+- 能看到分配大小、进程信息和时间戳。
+- 能在压力脚本下持续输出，不崩溃。
+
+### 第 3 周：ring buffer 与 PID 统计
+
+目标：加入高频事件传输和基础聚合能力。
+
+任务：
+- 使用 BPF ring buffer 传输事件。
+- 加入 PID 级统计：alloc_count、free_count、total_alloc、total_free、active_bytes。
+- 用户态提供 `--pid`、`--interval`、`--top` 参数。
+- 增加丢事件统计或错误计数。
+
+验收：
+- 能按进程输出 TopN 内存分配者。
+- 能解释为什么选择 ring buffer：低开销、共享缓冲、适合高频事件。
+
+### 第 4 周：Histogram 分配模式分析
+
+目标：让项目从“打印日志”升级为“行为分析”。
+
+任务：
+- 实现 log2 bucket histogram。
+- 统计不同 size 区间的分配次数和总字节数。
+- CLI 增加 `--hist` 模式。
+- 输出类似 `0-64B`、`64-256B`、`256B-1KB`、`1KB-4KB` 的分布。
+
+验收：
+- 能展示不同进程或全局的分配大小分布。
+- README 中解释 histogram 如何帮助判断内存行为模式。
+
+### 第 5 周：Stack Trace 热点分析
+
+目标：用调用栈定位分配热点，这是项目的核心亮点。
+
+任务：
+- 使用 `BPF_MAP_TYPE_STACK_TRACE`。
+- 在分配事件中记录 kernel stack id。
+- 以 stack id 为 key 聚合 total allocated bytes 和 count。
+- 用户态输出 TopN stack 热点。
+
+验收：
+- 能看到“哪个调用路径”产生最多分配。
+- 能解释 verifier 限制：eBPF 只采集轻量数据，复杂聚合放用户态。
+
+### 第 6 周：符号解析与可读输出
+
+目标：把地址变成函数名，让结果可读、可讲、可演示。
+
+任务：
+- 读取 `/proc/kallsyms` 或结合 BTF 解析内核符号。
+- 将 stack 地址解析为函数名。
+- 输出 TopN 热点函数和调用链。
+- 为权限不足、kptr_restrict、符号不可见提供降级提示。
+
+验收：
+- 输出中能看到函数名，而不是只有地址。
+- README 中写清楚符号解析依赖和限制。
+
+### 第 7 周：疑似泄漏检测
+
+目标：形成完整项目价值：不仅观测，还能发现异常。
+
+任务：
+- alloc 时记录 ptr -> size、timestamp、pid、stack id。
+- free 时删除对应 ptr。
+- 周期扫描长时间未释放对象，标记 suspect leak。
+- 支持阈值参数：`--leak-after 10s`、`--min-size`。
+- 输出疑似泄漏 TopN：pid、size、age、stack。
+
+验收：
+- 能用测试程序制造未释放分配，并被工具识别。
+- 能说明这是“疑似泄漏检测”，不是替代内核级 kmemleak。
+
+### 第 8 周：项目打磨、压测与面试材料
+
+目标：把项目变成作品，而不是一堆代码。
+
+任务：
+- 补全 README：背景、架构、构建、运行、示例输出、限制。
+- 补全 `docs/architecture.md`：模块图、数据流、设计取舍。
+- 补全 `docs/interview-notes.md`：项目亮点、难点、问答。
+- 增加 stress 脚本和 sample 输出。
+- 做一次长时间运行测试，记录 CPU 开销、丢事件情况、稳定性。
+
+验收：
+- 任何人按 README 能跑起来。
+- 能 3 分钟讲清项目，10 分钟讲清架构和难点。
+- 简历上可以写出量化亮点。
+
+## 技术边界
+
+eBPF 中做：
+- 事件采集。
+- 少量 map 统计。
+- stack id 获取。
+- ring buffer 上报。
+
+用户态做：
+- 复杂聚合。
+- TopN 排序。
+- 符号解析。
+- 泄漏判断。
+- CLI 展示。
+
+不要把全部逻辑塞进 eBPF。这样容易触发 verifier 限制，也会让程序难以维护。
+
+## 必须避免的错误
+
+- 只打印日志，没有统计分析。
+- 没有 stack trace，无法定位热点来源。
+- 没有 CO-RE，只能算 demo。
+- 把复杂分析写在 eBPF 里，导致 verifier 报错。
+- 没有 README、没有示例输出、没有演示脚本。
+- 只讲“挂 kprobe”，不讲数据流、开销、限制和取舍。
+
+## 简历表达模板
+
+基于 eBPF/libbpf/CO-RE 实现 Linux 内核内存行为分析工具，采集 kmalloc/kfree 等内存事件，通过 ring buffer 上报用户态，结合 PID 统计、log2 histogram、kernel stack trace 和符号解析定位内存分配热点，并实现基于时间窗口的疑似泄漏检测；项目支持 TopN 分析、CLI 参数化展示和压力测试脚本。
+
+## 面试 3 分钟讲法
+
+这个项目解决的是 Linux 内核内存行为观测问题。内核里内存分配频率很高，传统日志方式开销大、定位能力弱，所以我用 eBPF 在 kmalloc/kfree 等路径上做轻量采集，只把 pid、size、timestamp、ptr、stack id 这类必要信息上报。用户态负责聚合、排序、符号解析和泄漏判断。
+
+架构上分三层：eBPF 采集层、ring buffer 传输层、用户态分析层。采集层尽量轻，避免 verifier 和性能问题；分析层实现 PID 统计、histogram、调用栈热点和疑似泄漏检测。项目使用 CO-RE 和 BTF 提升跨内核版本兼容性，最终输出可读的 TopN 热点函数和异常分配路径。
