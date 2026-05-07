@@ -32,11 +32,14 @@ ls /sys/kernel/btf/vmlinux
 ## 构建
 
 ```bash
-# 1. 生成 vmlinux.h（首次构建需要）
-bash scripts/gen_vmlinux.sh
-
-# 2. 编译
+# make 会自动生成 vmlinux.h、BPF 对象和 skeleton
 make
+```
+
+如果只想单独生成 `vmlinux.h`：
+
+```bash
+make vmlinux
 ```
 
 ## 运行

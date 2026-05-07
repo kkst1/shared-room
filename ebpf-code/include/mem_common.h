@@ -1,8 +1,13 @@
 #ifndef __MEM_COMMON_H
 #define __MEM_COMMON_H
 
+#ifdef __BPF__
+#include "vmlinux.h"
+#else
+#include <linux/types.h>
+#endif
+
 #define TASK_COMM_LEN 16
-#define MAX_ENTRIES 10240
 
 enum event_type {
     EVENT_ALLOC = 1,

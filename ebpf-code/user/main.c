@@ -17,6 +17,13 @@ static void sig_handler(int sig)
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     const struct mem_event *e = data;
+
+    if (data_sz < sizeof(*e)) {
+        fprintf(stderr, "Short event: got %zu bytes, need %zu bytes\n",
+                data_sz, sizeof(*e));
+        return 0;
+    }
+
     printf("%-7s  pid=%-6u  comm=%-16s  ptr=0x%-14llx  size=%-8llu  ts=%llu\n",
            event_type_str(e->type),
            e->pid,
@@ -35,6 +42,8 @@ int main(int argc, char **argv)
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+
+    libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
     skel = mem_bpf__open_and_load();
     if (!skel) {

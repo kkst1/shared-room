@@ -4,8 +4,8 @@ BPFTOOL    ?= bpftool
 CC         ?= gcc
 
 ARCH       := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
-BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
-              -I./include -I/usr/include/bpf
+BPF_CFLAGS := -g -O2 -target bpf -D__BPF__ -D__TARGET_ARCH_$(ARCH) \
+              -I. -I./include -I/usr/include/bpf
 USER_CFLAGS := -g -Wall -I./include -I.
 USER_LDFLAGS := -lbpf -lelf -lz
 
@@ -23,7 +23,9 @@ all: $(USER_BIN)
 $(OUTPUT):
 	mkdir -p $(OUTPUT)
 
-vmlinux:
+vmlinux: vmlinux.h
+
+vmlinux.h:
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
 $(BPF_OBJ): $(BPF_SRC) vmlinux.h include/mem_common.h | $(OUTPUT)

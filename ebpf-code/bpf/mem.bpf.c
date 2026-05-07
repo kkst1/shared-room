@@ -10,11 +10,13 @@ struct {
     __uint(max_entries, 256 * 1024);
 } events SEC(".maps");
 
-static __always_inline int trace_alloc(void *ctx, unsigned long ptr,
+static __always_inline int trace_alloc(void *ctx, __u64 ptr,
                                        size_t bytes_alloc)
 {
     struct mem_event *e;
     __u64 pid_tgid;
+    __u32 pid;
+    __u32 tgid;
 
     if (bytes_alloc == 0)
         return 0;
@@ -24,8 +26,10 @@ static __always_inline int trace_alloc(void *ctx, unsigned long ptr,
         return 0;
 
     pid_tgid = bpf_get_current_pid_tgid();
-    e->pid  = pid_tgid >> 32;
-    e->tgid = pid_tgid;
+    pid = (__u32)pid_tgid;
+    tgid = pid_tgid >> 32;
+    e->pid  = pid;
+    e->tgid = tgid;
     e->size = bytes_alloc;
     e->ptr  = ptr;
     e->type = EVENT_ALLOC;
@@ -40,13 +44,15 @@ static __always_inline int trace_alloc(void *ctx, unsigned long ptr,
 SEC("tracepoint/kmem/kmalloc")
 int tracepoint_kmalloc(struct trace_event_raw_kmalloc *ctx)
 {
-    return trace_alloc(ctx, ctx->ptr, ctx->bytes_alloc);
+    return trace_alloc(ctx, (__u64)ctx->ptr, ctx->bytes_alloc);
 }
 
-static __always_inline int trace_free(void *ctx, unsigned long ptr)
+static __always_inline int trace_free(void *ctx, __u64 ptr)
 {
     struct mem_event *e;
     __u64 pid_tgid;
+    __u32 pid;
+    __u32 tgid;
 
     if (!ptr)
         return 0;
@@ -56,8 +62,10 @@ static __always_inline int trace_free(void *ctx, unsigned long ptr)
         return 0;
 
     pid_tgid = bpf_get_current_pid_tgid();
-    e->pid  = pid_tgid >> 32;
-    e->tgid = pid_tgid;
+    pid = (__u32)pid_tgid;
+    tgid = pid_tgid >> 32;
+    e->pid  = pid;
+    e->tgid = tgid;
     e->size = 0;
     e->ptr  = ptr;
     e->type = EVENT_FREE;
@@ -72,7 +80,7 @@ static __always_inline int trace_free(void *ctx, unsigned long ptr)
 SEC("tracepoint/kmem/kfree")
 int tracepoint_kfree(struct trace_event_raw_kfree *ctx)
 {
-    return trace_free(ctx, ctx->ptr);
+    return trace_free(ctx, (__u64)ctx->ptr);
 }
 
 char LICENSE[] SEC("license") = "GPL";
