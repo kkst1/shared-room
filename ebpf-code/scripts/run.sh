@@ -1,9 +1,10 @@
 #!/bin/bash
-# Run mem-analyzer with default settings
+# MemSnoop - eBPF Memory Analysis Engine (by kkst)
+# Run memsnoop with default settings
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN="$SCRIPT_DIR/../output/mem-analyzer"
+BIN="$SCRIPT_DIR/../output/memsnoop"
 
 if [ ! -f "$BIN" ]; then
     echo "Binary not found. Run 'make' first."
