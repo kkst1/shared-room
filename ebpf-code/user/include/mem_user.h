@@ -27,6 +27,9 @@ struct cli_opts {
     bool  show_hist;
     bool  show_stack;
     bool  verbose;
+    bool  show_leak;
+    int   leak_after_sec;   /* seconds; allocations older than this are suspects */
+    __u64 min_leak_size;    /* ignore allocations smaller than this */
 };
 
 struct pid_entry {
@@ -80,7 +83,7 @@ static void print_size_human(__u64 bytes, char *buf, size_t buf_sz)
 static void print_usage(const char *prog)
 {
     fprintf(stderr,
-        "MemSnoop v0.2 - eBPF Memory Analysis Engine (by kkst)\n"
+        "MemSnoop v0.3 - eBPF Memory Analysis Engine (by kkst)\n"
         "\n"
         "Usage: %s [OPTIONS]\n"
         "\n"
@@ -91,6 +94,9 @@ static void print_usage(const char *prog)
         "  --duration <sec>   Run for specified seconds then exit (0=forever)\n"
         "  --hist             Show allocation size histogram\n"
         "  --stack            Show top allocation stack traces\n"
+        "  --leak             Show suspected memory leaks\n"
+        "  --leak-after <sec> Leak detection threshold in seconds (default: 10)\n"
+        "  --min-size <bytes> Ignore allocations smaller than this (default: 0)\n"
         "  --verbose          Print every event to stdout\n"
         "  --help             Show this help message\n",
         prog, DEFAULT_TOP_N, DEFAULT_INTERVAL);
@@ -102,6 +108,7 @@ static int parse_opts(int argc, char **argv, struct cli_opts *opts)
     opts->top_n = DEFAULT_TOP_N;
     opts->interval_sec = DEFAULT_INTERVAL;
     opts->duration_sec = DEFAULT_DURATION;
+    opts->leak_after_sec = 10;  /* default 10 seconds */
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
@@ -118,6 +125,13 @@ static int parse_opts(int argc, char **argv, struct cli_opts *opts)
             opts->show_hist = true;
         } else if (strcmp(argv[i], "--stack") == 0) {
             opts->show_stack = true;
+        } else if (strcmp(argv[i], "--leak") == 0) {
+            opts->show_leak = true;
+        } else if (strcmp(argv[i], "--leak-after") == 0 && i + 1 < argc) {
+            opts->leak_after_sec = atoi(argv[++i]);
+            if (opts->leak_after_sec <= 0) opts->leak_after_sec = 10;
+        } else if (strcmp(argv[i], "--min-size") == 0 && i + 1 < argc) {
+            opts->min_leak_size = (__u64)atoll(argv[++i]);
         } else if (strcmp(argv[i], "--verbose") == 0) {
             opts->verbose = true;
         } else if (strcmp(argv[i], "--help") == 0) {

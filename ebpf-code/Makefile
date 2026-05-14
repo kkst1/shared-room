@@ -7,7 +7,7 @@ CC         ?= gcc
 ARCH       := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 BPF_CFLAGS := -g -O2 -target bpf -D__BPF__ -D__TARGET_ARCH_$(ARCH) \
               -I. -I./include -I/usr/include/bpf
-USER_CFLAGS := -g -Wall -Wextra -Wno-unused-parameter \
+USER_CFLAGS := -g -Wall -Wextra -Wno-unused-parameter -Wno-format \
                -I./include -I. -I./user
 USER_LDFLAGS := -lbpf -lelf -lz -lpthread
 
@@ -15,12 +15,14 @@ OUTPUT     := output
 BPF_SRC    := bpf/mem.bpf.c
 BPF_OBJ    := $(OUTPUT)/mem.bpf.o
 SKEL_H     := user/mem.skel.h
-USER_SRCS  := user/main.c user/stats.c
+USER_SRCS  := user/main.c user/stats.c user/symbol.c
 USER_BIN   := $(OUTPUT)/memsnoop
 
-.PHONY: all clean vmlinux
+.PHONY: all clean vmlinux test
 
 all: $(USER_BIN)
+
+test: $(OUTPUT)/test_leak
 
 $(OUTPUT):
 	mkdir -p $(OUTPUT)
@@ -36,8 +38,11 @@ $(BPF_OBJ): $(BPF_SRC) vmlinux.h include/mem_common.h | $(OUTPUT)
 $(SKEL_H): $(BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< > $@
 
-$(USER_BIN): $(USER_SRCS) $(SKEL_H) user/include/mem_user.h user/include/stats.h | $(OUTPUT)
+$(USER_BIN): $(USER_SRCS) $(SKEL_H) user/include/mem_user.h user/include/stats.h user/include/symbol.h | $(OUTPUT)
 	$(CC) $(USER_CFLAGS) -o $@ $(USER_SRCS) $(USER_LDFLAGS)
+
+$(OUTPUT)/test_leak: test_leak.c | $(OUTPUT)
+	$(CC) $(USER_CFLAGS) -o $@ $<
 
 clean:
 	rm -rf $(OUTPUT) $(SKEL_H)

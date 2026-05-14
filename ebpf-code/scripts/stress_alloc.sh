@@ -19,7 +19,7 @@ echo "Duration: ${DURATION}s"
 echo ""
 
 # Pattern 1: Small frequent allocations (triggers kmalloc small buckets)
-echo "[1/4] Small frequent allocations (dd 512B x many)..."
+echo "[1/5] Small frequent allocations (dd 512B x many)..."
 (
     end=$((SECONDS + DURATION))
     i=0
@@ -30,7 +30,7 @@ echo "[1/4] Small frequent allocations (dd 512B x many)..."
 ) &
 
 # Pattern 2: Large allocations (triggers higher-order pages)
-echo "[2/4] Large allocations (dd 64KB blocks)..."
+echo "[2/5] Large allocations (dd 64KB blocks)..."
 (
     end=$((SECONDS + DURATION))
     i=0
@@ -42,7 +42,7 @@ echo "[2/4] Large allocations (dd 64KB blocks)..."
 ) &
 
 # Pattern 3: Rapid create/delete (alloc+free churn)
-echo "[3/4] Rapid file create/delete (alloc+free churn)..."
+echo "[3/5] Rapid file create/delete (alloc+free churn)..."
 (
     end=$((SECONDS + DURATION))
     while [ $SECONDS -lt $end ]; do
@@ -54,7 +54,7 @@ echo "[3/4] Rapid file create/delete (alloc+free churn)..."
 ) &
 
 # Pattern 4: Network socket allocations
-echo "[4/4] Network socket allocations (curl localhost)..."
+echo "[4/5] Network socket allocations (curl localhost)..."
 (
     end=$((SECONDS + DURATION))
     while [ $SECONDS -lt $end ]; do
@@ -62,6 +62,16 @@ echo "[4/4] Network socket allocations (curl localhost)..."
         sleep 0.2
     done
 ) &
+
+# Pattern 5: Userspace malloc leak simulation (for leak detection testing)
+echo "[5/5] Userspace malloc leak test (if test_leak binary exists)..."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_LEAK="$SCRIPT_DIR/../output/test_leak"
+if [ -x "$TEST_LEAK" ]; then
+    "$TEST_LEAK" --size 4096 --count 20 --interval 100 --hold "$DURATION" &
+else
+    echo "  (test_leak not built, run: make test)"
+fi
 
 echo ""
 echo "All patterns running for ${DURATION}s..."

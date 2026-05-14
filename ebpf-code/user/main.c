@@ -18,6 +18,7 @@
 #include "mem.skel.h"
 #include "include/mem_user.h"
 #include "include/stats.h"
+#include "include/symbol.h"
 
 static volatile sig_atomic_t exiting;
 
@@ -85,6 +86,15 @@ static void print_report(struct mem_bpf *skel)
                         opts.top_n);
     }
 
+    if (opts.show_leak) {
+        __u64 min_age_ns = (__u64)opts.leak_after_sec * 1000000000ULL;
+        printf("\n  [Suspected Leaks (age > %ds, min_size=%" PRIu64 ")]\n\n",
+               opts.leak_after_sec, opts.min_leak_size);
+        print_leak_suspects(bpf_map__fd(skel->maps.stack_traces),
+                            bpf_map__fd(skel->maps.alloc_table),
+                            min_age_ns, opts.min_leak_size, opts.top_n);
+    }
+
     printf("\n  [Ring Buffer Stats]\n");
     print_drop_stats(bpf_map__fd(skel->maps.stats));
 
@@ -105,6 +115,9 @@ int main(int argc, char **argv)
     signal(SIGTERM, sig_handler);
 
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+
+    /* Load kernel symbols for stack trace resolution */
+    symbols_load();
 
     skel = mem_bpf__open();
     if (!skel) {
@@ -140,12 +153,17 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    printf("MemSnoop v0.2 - eBPF Memory Analysis Engine (by kkst)\n");
+    printf("MemSnoop v0.3 - eBPF Memory Analysis Engine (by kkst)\n");
+    symbols_print_status();
     printf("Tracing kmalloc/kfree...\n");
-    printf("  interval=%ds  top=%d  pid=%u  hist=%s  stack=%s\n",
+    printf("  interval=%ds  top=%d  pid=%u  hist=%s  stack=%s  leak=%s\n",
            opts.interval_sec, opts.top_n, opts.target_pid,
            opts.show_hist ? "on" : "off",
-           opts.show_stack ? "on" : "off");
+           opts.show_stack ? "on" : "off",
+           opts.show_leak ? "on" : "off");
+    if (opts.show_leak)
+        printf("  leak_after=%ds  min_size=%" PRIu64 "\n",
+               opts.leak_after_sec, opts.min_leak_size);
     printf("Press Ctrl-C to stop.\n");
 
     time_t start_time = time(NULL);
@@ -184,5 +202,6 @@ int main(int argc, char **argv)
 cleanup:
     ring_buffer__free(rb);
     mem_bpf__destroy(skel);
+    symbols_free();
     return err < 0 ? 1 : 0;
 }

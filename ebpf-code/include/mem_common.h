@@ -21,6 +21,9 @@
 #define RINGBUF_SIZE     (4 * 1024 * 1024)
 #define NUM_HIST_BUCKETS 8
 
+#define STATS_EVENTS_TOTAL   0
+#define STATS_EVENTS_DROPPED 1
+
 enum event_type {
     EVENT_ALLOC = 1,
     EVENT_FREE  = 2,

@@ -11,17 +11,6 @@
 #include <bpf/bpf_core_read.h>
 #include "../include/mem_common.h"
 
-/* trace_event_raw_kmalloc is missing from some kernels' BTF; define manually */
-struct trace_event_raw_kmalloc {
-    struct trace_entry ent;
-    long unsigned int call_site;
-    const void *ptr;
-    size_t bytes_req;
-    size_t bytes_alloc;
-    gfp_t gfp_flags;
-    int node;
-};
-
 /* ─── Maps ─────────────────────────────────────────────────────────────────── */
 
 struct {
@@ -70,9 +59,6 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
 } stats SEC(".maps");
-
-#define STATS_EVENTS_TOTAL   0
-#define STATS_EVENTS_DROPPED 1
 
 /* ─── Helpers ──────────────────────────────────────────────────────────────── */
 

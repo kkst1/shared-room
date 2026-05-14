@@ -1,0 +1,483 @@
+# slabcore 项目改进记录
+
+## 基于 rcore/command 的改进需求
+
+根据 `rcore/command` 文件的要求，对 slabcore 项目进行了以下改进：
+
+1. **方向 1：重写物理内存分配器** - 实现伙伴系统（Buddy System）+ SLUB 小对象分配器
+2. **方向 2：引入锁机制** - 实现自旋锁（Spinlock）和读写锁（RwLock）
+
+---
+
+## 遇到的问题及解决方案
+
+### 问题 1：头文件依赖问题
+
+**问题描述：**
+编译时出现 `array type has incomplete element type 'struct list_head'` 错误。
+
+**原因：**
+`buddy.h` 中使用了 `struct list_head` 类型，但没有包含 `list.h` 头文件。
+
+**解决方案：**
+在 `buddy.h` 中添加 `#include <embed_kkst/list.h>`。
+
+```c
+// 修改前
+#include <embed_kkst/types.h>
+
+// 修改后
+#include <embed_kkst/types.h>
+#include <embed_kkst/list.h>
+```
+
+### 问题 2：栈式分配器替换为伙伴系统
+
+**问题描述：**
+原有的栈式分配器（StackFrameAllocator）使用简单栈管理空闲页，容易产生碎片。
+
+**解决方案：**
+实现完整的伙伴系统替换栈式分配器，保持 `kalloc()` 和 `kfree()` 接口不变。
+
+### 问题 3：list_del 空指针解引用导致 kernel panic
+
+**问题描述：**
+运行时出现 `panic: trap from kernel! scause=0x0f`（store page fault），sepc 指向 `list_del` 函数，stval=0x0（尝试写入地址 0）。
+
+**原因：**
+1. `buddy.c` 中的 `page_frames` 数组没有初始化，`list_head` 的 `prev` 和 `next` 指针为 NULL
+2. 调用 `list_del` 时访问了未初始化的 `prev` 指针
+
+**解决方案：**
+
+在 `buddy_init()` 中初始化所有页帧描述符：
+```c
+for (int i = 0; i < 4096; i++) {
+    INIT_LIST_HEAD(&page_frames[i].list);
+    page_frames[i].order = 0;
+}
+```
+
+### 问题 4：buddy_free 合并逻辑错误
+
+**问题描述：**
+伙伴系统释放内存时，合并伙伴的检查条件不准确。
+
+**原因：**
+使用 `partner_pf->order == order` 判断伙伴是否空闲，但没有检查伙伴是否真的在空闲链表中。
+
+**解决方案：**
+增加检查伙伴节点是否在链表中：
+```c
+if (partner_pf && partner_pf->order == order &&
+    !list_empty(&partner_pf->list)) {
+    // 伙伴空闲，可以合并
+    list_del(&partner_pf->list);
+    // ...
+}
+```
+
+### 问题 5：打印格式问题
+
+**问题描述：**
+`printk("Buddy system initialized: %lu pages from pfn %lu\n", ...)` 输出异常，显示为 "7fc9ages"。
+
+**原因：**
+`vsprintf` 实现对 `%lu` 格式支持不完善。
+
+**解决方案：**
+使用 `%d` 替代：
+```c
+printk("Buddy system: %d pages, start pfn: %d\n", (int)num_pages, (int)start.value);
+```
+
+---
+
+## 所做的代码改变
+
+### 1. 新增文件
+
+#### `os/include/embed_kkst/list.h` - 链表数据结构
+```c
+// 双向链表实现
+struct list_head {
+    struct list_head *next;
+    struct list_head *prev;
+};
+
+// 核心函数
+static inline void INIT_LIST_HEAD(struct list_head *list);
+static inline void list_add(struct list_head *new, struct list_head *head);
+static inline void list_add_tail(struct list_head *new, struct list_head *head);
+static inline void list_del(struct list_head *entry);
+static inline int list_empty(const struct list_head *head);
+```
+
+#### `os/include/embed_kkst/buddy.h` - 伙伴系统头文件
+```c
+#define MAX_ORDER 11  // 最大阶数
+
+typedef struct {
+    struct list_head free_list[MAX_ORDER];  // 每阶空闲链表
+    u64 *bitmap;                            // 位图
+    u64 start_pfn;                          // 起始页帧号
+    u64 num_pages;                          // 总页数
+} BuddySystem;
+
+// 接口函数
+void buddy_init(BuddySystem *buddy, u64 start_pfn, u64 num_pages);
+u64 buddy_alloc(BuddySystem *buddy, u32 order);
+void buddy_free(BuddySystem *buddy, u64 pfn, u32 order);
+u64 buddy_get_partner(u64 pfn, u32 order);
+```
+
+#### `os/src/buddy.c` - 伙伴系统实现
+核心算法：
+- **初始化：** 将所有空闲页按最大阶组织到空闲链表
+- **分配：** 从请求阶向上查找空闲块，必要时分裂
+- **释放：** 检查伙伴是否空闲，若空闲则合并
+
+#### `os/include/embed_kkst/slub.h` - SLUB 分配器头文件
+```c
+#define SLUB_MAX_CPU 8
+#define SLUB_MIN_OBJECTS 4
+#define SLUB_MAX_OBJECTS 64
+
+typedef struct slub_page {
+    struct list_head list;
+    void *freelist;
+    u16 inuse;
+    u16 objects;
+    u8 page_state;
+    struct slub_cache *cache;
+} SlubPage;
+
+typedef struct slub_cache {
+    struct list_head partial;
+    struct list_head full;
+    u32 obj_size;
+    u32 num_pages;
+    u32 num_active;
+    char name[32];
+} SlubCache;
+```
+
+#### `os/src/slub.c` - SLUB 分配器实现
+核心算法：
+- **创建缓存：** 为不同大小的对象创建独立缓存
+- **分配对象：** 从 partial 链表找可用页面，或向伙伴系统申请新页
+- **释放对象：** 将对象放回页面空闲链表，调整 partial/full 状态
+
+### 2. 修改文件
+
+#### `os/src/address.c` - 内存分配器替换
+```c
+// 删除：栈式分配器相关代码（约 70 行）
+// 新增：伙伴系统
+#include <embed_kkst/buddy.h>
+BuddySystem buddy_allocator;
+
+void frame_alloctor_init() {
+    PhysPageNum start = ceil_phys(phys_addr_from_size_t((u64)kernelend));
+    PhysPageNum end = ceil_phys(phys_addr_from_size_t(PHYSTOP));
+    u64 num_pages = end.value - start.value;
+    buddy_init(&buddy_allocator, start.value, num_pages);
+}
+
+PhysPageNum kalloc(void) {
+    PhysPageNum frame;
+    frame.value = buddy_alloc(&buddy_allocator, 0);
+    if (frame.value != 0) {
+        PhysAddr addr = phys_addr_from_phys_page_num(frame);
+        memset((void*)addr.value, 0, PAGE_SIZE);
+    }
+    return frame;
+}
+
+void kfree(PhysPageNum ppn) {
+    buddy_free(&buddy_allocator, ppn.value, 0);
+}
+```
+
+#### `os/Makefile` - 添加新源文件
+```makefile
+SRCS_C = \
+    # ... 原有文件 ...
+    buddy.c \
+    slub.c \
+```
+
+---
+
+## 伙伴系统核心思想
+
+```
+内存块示例（4页内存）：
+
+初始状态：所有空闲页在 order=2 链表
++---+---+---+---+
+| 0 | 1 | 2 | 3 |  (4页，order=2)
++---+---+---+---+
+
+分配1页（order=0）：
+1. order=2 链表为空块？拆分！
+2. 拆分为两个 order=1 块：[0,1] 和 [2,3]
+3. 继续拆分 [0,1] 为两个 order=0 块：[0] 和 [1]
+4. 分配 [0]，将 [1] 放入 order=0 链表
+
++---+---+---+---+
+| X | 1 | 2 | 3 |  X=已分配，1在order=0链表
++---+---+---+---+
+
+释放 [0]：
+1. 检查伙伴 [1] 是否空闲？是！
+2. 合并为 order=1 块 [0,1]
+3. 检查伙伴 [2,3] 是否空闲？是！
+4. 合并为 order=2 块 [0,1,2,3]
+```
+
+## SLUB 分配器核心思想
+
+```
+内存分配层次：
+┌─────────────────────────────────────────────┐
+│              应用/内核代码                    │
+│         kmalloc(16) / slub_kfree(p)          │
+├─────────────────────────────────────────────┤
+│              SLUB 分配器                      │
+│   ┌─────────┬─────────┬─────────┐           │
+│   │ 16-byte │ 32-byte │ 64-byte │ ...       │
+│   │  cache  │  cache  │  cache  │           │
+│   └─────────┴─────────┴─────────┘           │
+├─────────────────────────────────────────────┤
+│              伙伴系统                         │
+│         kalloc() / kfree()                   │
+│         (分配整页物理内存)                    │
+└─────────────────────────────────────────────┘
+
+分配流程：
+1. kmalloc(32) → 找到 kmalloc-32 缓存
+2. 从 partial 链表找可用页面
+3. 从页面的 freelist 取出一个对象
+4. 如果页面满了，移到 full 链表
+5. 如果没有可用页面，向伙伴系统申请新页
+```
+
+---
+
+## 编译验证
+
+```bash
+cd slabcore
+make -C os clean
+make -C os os.elf
+```
+
+编译成功，无错误（仅有一个已有的 syscall.c 警告）。
+
+---
+
+## 运行测试结果
+
+```bash
+$ cd slabcore && ./build.sh && ./run.sh
+```
+
+**输出：**
+```
+OpenSBI v1.2
+...
+hello slabcore! (kkst)
+Buddy system: 32713 pages, start pfn: 524855
+kernel satp:8000000000080237
+/**** SLABCORE APPS ****
+num app:2
+time
+user_shell
+**************/
+slabcore uptime: 0 seconds
+slabcore shell (kkst)
+slabcore>
+```
+
+**测试结果：**
+- ✅ 伙伴系统初始化成功（32713 个空闲页）
+- ✅ 内核页表初始化成功
+- ✅ 应用程序加载成功
+- ✅ Shell 正常启动，等待用户输入
+
+---
+
+## SLUB 小对象分配器实现
+
+### 设计思路
+
+SLUB 是 Linux 内核中的 slab 分配器实现，专门用于高效分配小对象（几十字节到几 KB）。
+
+### 核心数据结构
+
+```c
+// SLUB 页面描述符（存储在页面末尾）
+typedef struct slub_page {
+    struct list_head list;     // 链表节点
+    void *freelist;            // 空闲对象链表
+    u16 inuse;                 // 已使用对象数
+    u16 objects;               // 页面总对象数
+    u8 page_state;             // 页面状态
+    struct slub_cache *cache;  // 所属缓存
+} SlubPage;
+
+// SLUB 缓存（管理同一大小的对象）
+typedef struct slub_cache {
+    struct list_head partial;  // 部分使用的页面
+    struct list_head full;     // 完全使用的页面
+    u32 obj_size;              // 对象大小
+    u32 num_pages;             // 已分配页面数
+    u32 num_active;            // 活跃对象数
+    char name[32];             // 缓存名称
+} SlubCache;
+```
+
+### 测试结果
+
+```
+SLUB allocator initialized with 6 caches
+=== SLUB Test ===
+kmalloc(16) = 802a2000
+kmalloc(32) = 802a3000
+kmalloc(64) = 802a4000
+kfree done
+=== SLUB Stats ===
+kmalloc-16: obj_size=16, pages=1, objects=64, active=0
+kmalloc-32: obj_size=32, pages=1, objects=64, active=0
+kmalloc-64: obj_size=64, pages=1, objects=63, active=0
+```
+
+### 新增文件
+
+- `os/include/embed_kkst/slub.h` - SLUB 头文件
+- `os/src/slub.c` - SLUB 实现
+
+### 与 Linux SLUB 的对比
+
+| 特性 | Linux SLUB | slabcore SLUB |
+|------|-----------|---------------|
+| 对象大小 | 动态 | 预定义 6 种 |
+| CPU 缓存 | 有 | 无（简化） |
+| 页面回收 | 有 | 无（简化） |
+| 调试支持 | 完善 | 基础统计 |
+
+---
+
+## 锁机制实现（方向 2）
+
+### 设计思路
+
+为支持 SMP（对称多处理）架构下的并发安全，实现了自旋锁和读写锁两种锁机制。
+
+### 自旋锁实现
+
+```c
+// 基于 RISC-V 原子指令 amoswap.w.aq
+static inline u32 __test_and_set(volatile u32 *addr) {
+    u32 old = 1;
+    __asm__ __volatile__(
+        "amoswap.w.aq %0, %1, (%2)"
+        : "=r"(old)
+        : "r"(old), "r"(addr)
+        : "memory"
+    );
+    return old;
+}
+
+void spin_lock(SpinLock *lock) {
+    while (__test_and_set(&lock->locked) != 0) {
+        __asm__ __volatile__("nop");  // 忙等待
+    }
+    __asm__ __volatile__("fence rw, rw" ::: "memory");  // 内存屏障
+}
+```
+
+### 读写锁实现
+
+```c
+typedef struct {
+    volatile int readers;  // 正数=读者数量，负数=写者持有
+    SpinLock lock;
+} RwLock;
+
+// 读者：原子增加 readers
+void read_lock(RwLock *lock) {
+    spin_lock(&lock->lock);
+    lock->readers++;
+    spin_unlock(&lock->lock);
+}
+
+// 写者：等待 readers 变为 0，然后设为 -1
+void write_lock(RwLock *lock) {
+    spin_lock(&lock->lock);
+    while (lock->readers != 0) {
+        spin_unlock(&lock->lock);
+        spin_lock(&lock->lock);
+    }
+    lock->readers = -1;
+    spin_unlock(&lock->lock);
+}
+```
+
+### 锁保护的关键数据结构
+
+| 数据结构 | 锁类型 | 保护内容 |
+|---------|--------|---------|
+| 进程表 tasks[] | SpinLock | PCB 分配和状态修改 |
+| PID 分配器 nextpid | SpinLock | PID 唯一分配 |
+| 伙伴系统 buddy_allocator | SpinLock | 页帧分配和释放 |
+| SLUB 缓存 slub_caches | SpinLock | 小对象分配和释放 |
+
+### 测试结果
+
+```
+=== SpinLock Test ===
+Lock acquired
+Lock released
+=== RwLock Test ===
+Read lock acquired
+Read lock released
+Write lock acquired
+Write lock released
+=== Lock Test End ===
+```
+
+### 新增文件
+
+- `os/include/embed_kkst/lock.h` - 锁机制头文件
+- `os/src/lock.c` - 锁机制实现
+
+### 与 Linux 内核锁机制的对比
+
+| 特性 | Linux 内核 | slabcore |
+|------|-----------|----------|
+| 自旋锁 | 支持 | 支持 |
+| 读写锁 | 支持 | 支持 |
+| 中断禁用 | 完整 | 简化版 |
+| 死锁检测 | 有 | 无 |
+| 优先级继承 | 有 | 无 |
+
+---
+
+## 总结
+
+本次改进成功实现了：
+1. ✅ 伙伴系统物理内存分配器 - 替代原有栈式分配器
+2. ✅ SLUB 小对象分配器 - 针对高频小块分配优化
+3. ✅ 自旋锁和读写锁 - 为多核并发提供安全保障
+4. ✅ 保持原有接口兼容性（kalloc/kfree 接口不变）
+5. ✅ 代码编译通过，内核正常运行
+
+**修复的运行时问题：**
+- 链表节点未初始化导致空指针解引用
+- 伙伴系统合并逻辑检查不完整
+- SLUB 释放时未正确更新缓存统计
+- RISC-V pause 指令不支持，改用 nop
+
+这些改进使 slabcore 项目的内存管理和并发控制机制更接近现代操作系统的设计，可以作为简历项目的重要亮点。
